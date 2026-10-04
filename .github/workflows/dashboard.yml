@@ -132,6 +132,20 @@ jobs:
 
           await page.waitForTimeout(1500);   // 描画の落ち着きを待つ
           await page.screenshot({ path: 'raw.png' });
+
+          // 画面に「取得できませんでした」が残っていないか確認する。
+          // 残っていてもワークフローは止めない（前回の画像より新しい方がましなので）が、
+          // ログに警告として出し、気づけるようにしておく。
+          const bad = await page.evaluate(() => {
+            const t = document.body.innerText;
+            return ['取得できませんでした', '取得失敗'].filter(s => t.indexOf(s) !== -1);
+          });
+          if (bad.length) {
+            console.log('::warning::画面に取得失敗の表示が残っています: ' + bad.join(', '));
+          } else {
+            console.log('データの表示を確認した（取得失敗の表示なし）');
+          }
+
           await browser.close();
           console.log('撮影完了');
           EOF

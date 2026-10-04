@@ -239,6 +239,41 @@ suspend_for() {
     done
     log "RTC が使えなかったので通常の sleep で待機"
     sleep "$secs"
+    return 0
+}
+
+# 指定の時刻まで待つ。
+#
+# RTC のアラームより先に、USB の抜き差しや電源ボタンで目が覚めることがある。
+# そのまま次の周回に入ると、更新間隔を無視して通信と描画を繰り返してしまい、
+# 電池をどんどん使う。目標時刻まで残っていれば、もう一度サスペンドし直す。
+wait_until() {
+    target=$1
+    while true; do
+        remain=$(( target - $(date +%s) ))
+        [ "$remain" -le 0 ] && return 0
+
+        # 停止ファイルが置かれていたら、待っている途中でも終わる
+        [ -f "$STOPFILE" ] && return 0
+
+        # 残りがごく僅かなら、サスペンドし直すより起きていた方が早い
+        if [ "$remain" -lt 60 ]; then
+            sleep "$remain"
+            return 0
+        fi
+
+        if [ "$MODE" = "suspend" ]; then
+            suspend_for "$remain"
+        else
+            sleep "$remain"
+            return 0
+        fi
+
+        remain=$(( target - $(date +%s) ))
+        if [ "$remain" -gt 60 ]; then
+            log "予定より早く目が覚めた（残り ${remain}秒）。もう一度寝る"
+        fi
+    done
 }
 
 # --- 後始末 ---------------------------------------------------------
@@ -259,6 +294,10 @@ while true; do
         cleanup
     fi
 
+    # 次に更新する時刻を先に決めておく。
+    # 通信や描画にかかった時間ぶん間隔がずれていくのを防ぐ。
+    NEXT=$(( $(date +%s) + INTERVAL ))
+
     # 1. ネットワーク作業は UI が動いている状態で行う
     start_framework
     wifi_on
@@ -275,10 +314,6 @@ while true; do
     stop_framework
     show_image
 
-    # 4. 待機
-    if [ "$MODE" = "suspend" ]; then
-        suspend_for "$INTERVAL"
-    else
-        sleep "$INTERVAL"
-    fi
+    # 4. 次の更新時刻まで待つ
+    wait_until "$NEXT"
 done
