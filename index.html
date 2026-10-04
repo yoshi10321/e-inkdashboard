@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=758, initial-scale=1">
+<meta http-equiv="refresh" content="3600">
+<title>Eink Dashboard</title>
+<style>
+/* ---------------------------------------------------------------
+   Kindle Paperwhite 第7世代 向け E-ink ダッシュボード
+
+   ・ブラウザに画面回転機能がないため CSS で 90 度回転させている
+   ・天気アイコンは div だけで描画（旧WebKitでの SVG 描画を避けるため）
+   ・PC で確認したいときは URL の末尾に #flat を付ける
+   --------------------------------------------------------------- */
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #ffffff;
+  color: #000000;
+}
+
+#stage {
+  position: fixed;
+  top: 0;
+  left: 0;
+  padding: 10px 14px;
+  box-sizing: border-box;
+  -webkit-box-sizing: border-box;
+  overflow: hidden;
+  -webkit-transform-origin: 0 0;
+  transform-origin: 0 0;
+  font-family: Georgia, "Hiragino Mincho ProN", "Yu Mincho", serif;
+  -webkit-text-size-adjust: none;
+}
+#stage.flat {
+  position: static;
+  -webkit-transform: none !important;
+  transform: none !important;
+  width: 1024px !important;
+  height: 758px !important;
+}
+html.flat, body.flat { width: auto; height: auto; overflow: visible; }
+
+.sans {
+  font-family: "Helvetica Neue", Helvetica, Arial,
+               "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+}
+
+#grid { width: 100%; height: 100%; border-collapse: collapse; }
+#grid > tbody > tr > td { padding: 0; vertical-align: top; }
+
+/* ヘッダー */
+.head { width: 100%; border-bottom: 3px solid #000; padding-bottom: 5px; }
+.head td { vertical-align: baseline; padding: 0; }
+.today-date { font-size: 27px; font-weight: bold; letter-spacing: 0.02em; }
+.head-right { text-align: right; font-size: 14px; color: #444; letter-spacing: 0.08em; }
+.head-right span { margin-left: 18px; }
+
+/* 中段 */
+.mid { width: 100%; height: 100%; border-collapse: collapse; }
+.mid > tbody > tr > td { vertical-align: top; padding: 0; }
+.mid-left { padding-right: 12px !important; }
+.mid-right { width: 37%; }
+
+/* 今日の天気 */
+.today-wx { width: 100%; height: 100%; border-collapse: collapse; border: 3px solid #000; }
+.today-wx td { padding: 8px 10px; vertical-align: middle; }
+.wx-icon-cell { width: 136px; text-align: center; padding-left: 14px !important; }
+.wx-temp {
+  font-size: 118px;
+  font-weight: bold;
+  line-height: 0.92;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  text-align: right;
+  padding-right: 14px !important;
+}
+.wx-temp .deg { font-size: 52px; }
+.wx-desc { font-size: 38px; font-weight: bold; margin-bottom: 16px; }
+.wx-sub { font-size: 21px; color: #111; white-space: nowrap; }
+.wx-sub b { font-size: 28px; }
+.wx-meta { font-size: 16px; color: #444; margin-top: 16px; line-height: 1.8; letter-spacing: 0.03em; }
+
+/* 市況カード */
+.mkt-wrap { width: 100%; height: 100%; border-collapse: separate; border-spacing: 0; }
+.mkt-wrap td { padding: 0; }
+.mkt {
+  border: 3px solid #000;
+  padding: 7px 12px 8px 12px;
+  height: 50%;
+  box-sizing: border-box;
+  -webkit-box-sizing: border-box;
+  vertical-align: top !important;
+}
+.mkt.first { border-bottom-width: 0; }
+.m-label { font-size: 11px; letter-spacing: 0.2em; color: #333; margin-bottom: 3px; }
+.m-value {
+  font-size: 46px;
+  font-weight: bold;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  display: inline-block;
+}
+.m-change { font-size: 17px; display: inline-block; margin-left: 10px; }
+.m-change .up:before   { content: "\25B2 "; }
+.m-change .down:before { content: "\25BC "; }
+.m-change .down { background: #e2e2e2; padding: 0 4px; }
+.m-foot { width: 100%; margin-top: 6px; border-collapse: collapse; }
+.m-foot td { vertical-align: bottom; padding: 0; }
+.m-asof { font-size: 11px; color: #777; white-space: nowrap; }
+
+.spark { height: 64px; font-size: 0; text-align: right; border-bottom: 1px solid #bbb; }
+.spark i { display: inline-block; vertical-align: bottom; margin-left: 1px; }
+
+/* 週間予報 */
+.sec-title { font-size: 12px; letter-spacing: 0.22em; border-bottom: 2px solid #000; padding-bottom: 3px; }
+.week { width: 100%; height: 100%; border-collapse: collapse; table-layout: fixed; }
+.week td {
+  text-align: center;
+  padding: 4px 3px;
+  border-right: 1px solid #c8c8c8;
+  vertical-align: middle;
+}
+.week td.last { border-right: 0; }
+.week td.weekend { background: #efefef; }
+.w-day { font-size: 24px; font-weight: bold; }
+.w-date { font-size: 14px; color: #666; margin-bottom: 8px; letter-spacing: 0.03em; }
+.w-icon-wrap { margin-bottom: 8px; }
+.w-label { font-size: 15px; color: #333; margin-bottom: 6px; }
+.w-temp { font-size: 29px; font-variant-numeric: tabular-nums; }
+.w-temp .min { color: #666; font-size: 23px; }
+.w-pop { font-size: 14px; color: #333; margin-top: 5px; }
+
+/* 時間別予報（今日のパネル下部） */
+.hourly { width: 100%; border-collapse: collapse; margin-top: 18px;
+          border-top: 1px solid #c8c8c8; table-layout: fixed; }
+.hourly td { text-align: center; padding: 10px 2px 2px 2px; vertical-align: top; }
+.h-time { font-size: 14px; color: #555; letter-spacing: 0.04em; margin-bottom: 4px; }
+.h-temp { font-size: 20px; font-variant-numeric: tabular-nums; margin-top: 4px; }
+.h-pop { font-size: 12px; color: #555; }
+
+.err { font-size: 14px; color: #666; }
+
+/* ---------------------------------------------------------------
+   天気アイコン — div のみで描画
+   黒いシルエットを敷き、内側に一回り小さい白を重ねて輪郭を作る。
+   図形どうしの継ぎ目が出ないので、旧端末でも綺麗に出る。
+   --------------------------------------------------------------- */
+.ic { position: relative; display: inline-block; }
+.ic div { position: absolute; }
+.ic .k { background: #000; }          /* 黒 */
+.ic .w { background: #fff; }          /* 白（内側） */
+.ic .rnd { border-radius: 50%; }
+.ic .pill { border-radius: 999px; }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <table id="grid">
+    <tr>
+      <td height="1">
+        <table class="head">
+          <tr>
+            <td><span class="today-date" id="dateLine">&nbsp;</span></td>
+            <td class="head-right sans">
+              <span id="placeLine">&nbsp;</span><span id="updLine">&nbsp;</span>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+
+    <tr>
+      <td height="54%" style="padding-top:10px;">
+        <table class="mid">
+          <tr>
+            <td class="mid-left">
+              <table class="today-wx">
+                <tr>
+                  <td class="wx-icon-cell" id="wxIcon">&nbsp;</td>
+                  <td>
+                    <div class="wx-desc" id="wxDesc">読み込み中</div>
+                    <div class="wx-sub sans" id="wxSub">&nbsp;</div>
+                    <div class="wx-meta sans" id="wxMeta">&nbsp;</div>
+                    <table class="hourly" id="hourly"><tr><td>&nbsp;</td></tr></table>
+                  </td>
+                  <td class="wx-temp" id="wxTemp">--<span class="deg">&deg;</span></td>
+                </tr>
+              </table>
+            </td>
+            <td class="mid-right">
+              <table class="mkt-wrap">
+                <tr>
+                  <td class="mkt first">
+                    <div class="m-label sans">USD / JPY</div>
+                    <span class="m-value" id="fxValue">--</span><span
+                          class="m-change sans" id="fxChange">&nbsp;</span>
+                    <table class="m-foot">
+                      <tr>
+                        <td class="m-asof sans" id="fxAsOf">&nbsp;</td>
+                        <td><div class="spark" id="fxSpark"></div></td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="mkt">
+                    <div class="m-label sans">NIKKEI 225</div>
+                    <span class="m-value" id="nkValue">--</span><span
+                          class="m-change sans" id="nkChange">&nbsp;</span>
+                    <table class="m-foot">
+                      <tr>
+                        <td class="m-asof sans" id="nkAsOf">&nbsp;</td>
+                        <td><div class="spark" id="nkSpark"></div></td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+
+    <tr>
+      <td height="1" style="padding-top:10px;">
+        <div class="sec-title sans">7-DAY FORECAST</div>
+      </td>
+    </tr>
+
+    <tr>
+      <td style="padding-top:6px;">
+        <table class="week" id="weekTable">
+          <tr><td colspan="7" class="err sans" style="text-align:left;border:0;">週間予報を読み込み中…</td></tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</div>
+
+<script>
+/* =================================================================
+   設定
+   ================================================================= */
+var CONFIG = {
+  lat: 35.84,                   // 緯度（獨協大学前駅・小数2桁に丸め）
+  lon: 139.80,                  // 経度（獨協大学前駅・小数2桁に丸め）
+  placeName: "草加",            // 画面右上に出す地名
+  timezone: "Asia/Tokyo",
+  reloadMinutes: 60,            // 自動リロード間隔（meta refresh と揃えること）
+
+  /* Kindle はツールバーの高さを差し引かずに画面サイズを報告するため、
+     その分をここで引く。
+       ・右端が切れる / スクロールバーが出る → 数値を大きくする
+       ・右側に余白が出る                   → 数値を小さくする
+     10 くらいずつ増減して合わせてください。 */
+  toolbarPx: 150
+};
+
+/* =================================================================
+   旧Kindleブラウザ向けに ES5 のみで記述
+   ================================================================= */
+
+function el(id) { return document.getElementById(id); }
+function pad2(n) { return (n < 10 ? "0" : "") + n; }
+
+var FLAT = String(window.location.hash).indexOf("flat") !== -1;
+
+/* --- 回転とサイズ決定 -------------------------------------------- */
+function layout() {
+  var stage = el("stage");
+  if (FLAT) {
+    stage.className = "flat";
+    document.body.className = "flat";
+    document.documentElement.className = "flat";
+    return;
+  }
+  var vw = document.documentElement.clientWidth  || window.innerWidth;
+  var vh = document.documentElement.clientHeight || window.innerHeight;
+
+  var usableH = vh - CONFIG.toolbarPx;   // 回転後の「横幅」になる
+  if (usableH < 200) { usableH = vh; }   // 異常値のときは補正しない
+
+  stage.style.width  = usableH + "px";
+  stage.style.height = vw + "px";
+
+  var t = "rotate(90deg) translate(0, -" + vw + "px)";
+  stage.style.webkitTransform = t;
+  stage.style.transform = t;
+}
+
+/* 旧Kindleブラウザは xhr.timeout / ontimeout が効かないことがあり、
+   応答のない相手だと永久に待ち続けてブラウザが読み込み中のままになる。
+   自前のタイマーで必ず abort し、コールバックは一度だけ呼ぶ。 */
+function httpGet(url, onOk, onErr, timeoutMs) {
+  var done = false;
+  var timer = null;
+
+  function finish(ok, payload) {
+    if (done) { return; }
+    done = true;
+    if (timer) { clearTimeout(timer); timer = null; }
+    if (ok) { onOk(payload); } else { onErr && onErr(payload); }
+  }
+
+  var xhr = new XMLHttpRequest();
+  try {
+    xhr.open("GET", url, true);
+  } catch (e) { finish(false, e); return; }
+
+  timer = setTimeout(function () {
+    try { xhr.abort(); } catch (e) {}
+    finish(false, new Error("timeout"));
+  }, timeoutMs || 8000);
+
+  xhr.onreadystatechange = function () {
+    if (xhr.readyState !== 4) { return; }
+    if (xhr.status >= 200 && xhr.status < 300) { finish(true, xhr.responseText); }
+    else { finish(false, new Error("HTTP " + xhr.status)); }
+  };
+  xhr.onerror = function () { finish(false, new Error("network")); };
+  xhr.send(null);
+}
+
+function fmtNum(v, digits) {
+  if (v === null || v === undefined || isNaN(v)) { return "--"; }
+  var s = Number(v).toFixed(digits);
+  var parts = s.split(".");
+  var head = parts[0], out = "", count = 0, i;
+  for (i = head.length - 1; i >= 0; i--) {
+    out = head.charAt(i) + out;
+    count++;
+    if (count % 3 === 0 && i > 0) { out = "," + out; }
+  }
+  return parts.length > 1 ? out + "." + parts[1] : out;
+}
+
+function drawSpark(nodeId, values) {
+  var node = el(nodeId);
+  if (!node || !values || values.length < 2) { return; }
+  var min = values[0], max = values[0], i;
+  for (i = 1; i < values.length; i++) {
+    if (values[i] < min) { min = values[i]; }
+    if (values[i] > max) { max = values[i]; }
+  }
+  var range = max - min;
+  if (range === 0) { range = 1; }
+  var n = values.length;
+  var barW = Math.max(2, Math.floor(150 / n));
+  var html = "";
+  for (i = 0; i < n; i++) {
+    var h = Math.round(3 + ((values[i] - min) / range) * 19);
+    html += '<i style="width:' + barW + 'px;height:' + h + 'px;'
+          + 'background:' + (i === n - 1 ? '#000' : '#8a8a8a') + ';"></i>';
+  }
+  node.innerHTML = html;
+}
+
+function renderChange(nodeId, diff, pct, digits) {
+  var node = el(nodeId);
+  if (!node) { return; }
+  if (diff === null || isNaN(diff)) { node.innerHTML = "&nbsp;"; return; }
+  var cls = diff >= 0 ? "up" : "down";
+  var sign = diff >= 0 ? "+" : "-";
+  node.innerHTML = '<span class="' + cls + '">' + sign + fmtNum(Math.abs(diff), digits)
+    + "（" + sign + Math.abs(pct).toFixed(2) + "%）</span>";
+}
+
+/* =================================================================
+   天気アイコン（div のみで描画）
+   ================================================================= */
+
+/* 位置とサイズはすべてコンテナに対する % 指定。size を変えれば拡縮する */
+function box(cls, l, t, w, h) {
+  return '<div class="' + cls + '" style="left:' + l + '%;top:' + t + '%;'
+       + 'width:' + w + '%;height:' + h + '%;"></div>';
+}
+
+/* 雲：黒いシルエット＋内側の白。輪郭線のある雲に見える */
+function cloudShape(filled) {
+  var s = box("k pill", 6, 50, 88, 36)
+        + box("k rnd", 22, 22, 46, 46)
+        + box("k rnd", 56, 34, 32, 32);
+  if (!filled) {
+    s += box("w pill", 10, 55, 80, 26)
+       + box("w rnd", 26, 28, 38, 38)
+       + box("w rnd", 58, 39, 24, 24);
+  }
+  return s;
+}
+
+/* 太陽：円＋上下左右の光条 */
+function sunShape(l, t, w) {
+  var r = w / 2;
+  return box("k rnd", l, t, w, w)
+       + box("k", l + r - 3, t - 14, 6, 11)
+       + box("k", l + r - 3, t + w + 3, 6, 11)
+       + box("k", l - 14, t + r - 3, 11, 6)
+       + box("k", l + w + 3, t + r - 3, 11, 6);
+}
+
+function iconHtml(code, px) {
+  var inner = "";
+
+  if (code === 0 || code === 1) {                 /* 快晴・晴れ */
+    inner = sunShape(22, 22, 56);
+
+  } else if (code === 2) {                        /* 晴れ時々曇り */
+    inner = box("k rnd", 50, 4, 40, 40)           /* 太陽（雲の後ろ） */
+          + box("w rnd", 54, 8, 32, 32)
+          + box("k rnd", 58, 12, 24, 24)
+          + cloudShape(false);
+
+  } else if (code === 3) {                        /* 曇り */
+    inner = cloudShape(false);
+
+  } else if (code === 45 || code === 48) {        /* 霧 */
+    inner = box("k pill", 8, 26, 84, 8)
+          + box("k pill", 16, 46, 76, 8)
+          + box("k pill", 8, 66, 80, 8);
+
+  } else if (code >= 51 && code <= 57) {          /* 霧雨（点） */
+    inner = cloudShape(false)
+          + box("k rnd", 26, 90, 7, 7)
+          + box("k rnd", 47, 90, 7, 7)
+          + box("k rnd", 68, 90, 7, 7);
+
+  } else if ((code >= 61 && code <= 67) || (code >= 80 && code <= 82)) {  /* 雨 */
+    inner = cloudShape(false)
+          + box("k", 27, 88, 6, 14)
+          + box("k", 48, 88, 6, 14)
+          + box("k", 69, 88, 6, 14);
+
+  } else if ((code >= 71 && code <= 77) || code === 85 || code === 86) {  /* 雪 */
+    inner = cloudShape(false)
+          + box("k rnd", 25, 89, 10, 10)
+          + box("k rnd", 46, 92, 10, 10)
+          + box("k rnd", 67, 89, 10, 10);
+
+  } else if (code >= 95) {                        /* 雷 */
+    inner = cloudShape(true)
+          + box("k", 44, 86, 9, 18);
+
+  } else {
+    inner = cloudShape(false);
+  }
+
+  return '<span class="ic" style="width:' + px + 'px;height:' + px + 'px;">'
+       + inner + "</span>";
+}
+
+/* --- 天気コード → 日本語ラベル ----------------------------------- */
+function weatherLabel(code) {
+  if (code === 0) { return "快晴"; }
+  if (code === 1) { return "晴れ"; }
+  if (code === 2) { return "晴れ時々曇り"; }
+  if (code === 3) { return "曇り"; }
+  if (code === 45 || code === 48) { return "霧"; }
+  if (code >= 51 && code <= 57) { return "霧雨"; }
+  if (code >= 61 && code <= 65) { return "雨"; }
+  if (code === 66 || code === 67) { return "着氷性の雨"; }
+  if (code >= 71 && code <= 77) { return "雪"; }
+  if (code >= 80 && code <= 82) { return "にわか雨"; }
+  if (code === 85 || code === 86) { return "にわか雪"; }
+  if (code === 95) { return "雷雨"; }
+  if (code === 96 || code === 99) { return "雷雨・ひょう"; }
+  return "―";
+}
+function weatherLabelShort(code) {
+  if (code === 0 || code === 1) { return "晴"; }
+  if (code === 2) { return "晴時々曇"; }
+  if (code === 3) { return "曇"; }
+  if (code === 45 || code === 48) { return "霧"; }
+  if (code >= 51 && code <= 57) { return "霧雨"; }
+  if (code >= 61 && code <= 65) { return "雨"; }
+  if (code === 66 || code === 67) { return "凍雨"; }
+  if (code >= 71 && code <= 77) { return "雪"; }
+  if (code >= 80 && code <= 82) { return "にわか雨"; }
+  if (code === 85 || code === 86) { return "にわか雪"; }
+  if (code >= 95) { return "雷雨"; }
+  return "―";
+}
+
+var WDAY = ["日", "月", "火", "水", "木", "金", "土"];
+
+function parseISODate(s) {
+  var p = String(s).split("-");
+  return new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+}
+
+/* 端末の時計は狂っていることがあるので、API が返す日時を優先する */
+function renderHeader(apiIso) {
+  var y, mo, da, dow, hh, mi;
+  if (apiIso) {
+    var parts = String(apiIso).split("T");
+    var ymd = parts[0].split("-");
+    var hm = (parts[1] || "00:00").split(":");
+    y = Number(ymd[0]); mo = Number(ymd[1]); da = Number(ymd[2]);
+    hh = pad2(Number(hm[0])); mi = pad2(Number(hm[1]));
+    dow = new Date(y, mo - 1, da).getDay();
+  } else {
+    var now = new Date();
+    y = now.getFullYear(); mo = now.getMonth() + 1; da = now.getDate();
+    dow = now.getDay();
+    hh = pad2(now.getHours()); mi = pad2(now.getMinutes());
+  }
+  el("dateLine").innerHTML = y + "年" + mo + "月" + da + "日（" + WDAY[dow] + "）";
+  el("placeLine").innerHTML = CONFIG.placeName;
+  el("updLine").innerHTML = "更新 " + hh + ":" + mi;
+}
+
+/* --- 天気（Open-Meteo） ------------------------------------------ */
+function loadWeather() {
+  var url = "https://api.open-meteo.com/v1/forecast"
+    + "?latitude=" + CONFIG.lat
+    + "&longitude=" + CONFIG.lon
+    + "&current=temperature_2m,weather_code,relative_humidity_2m,wind_speed_10m,apparent_temperature"
+    + "&hourly=temperature_2m,weather_code,precipitation_probability"
+    + "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset"
+    + "&timezone=" + encodeURIComponent(CONFIG.timezone)
+    + "&forecast_days=7";
+
+  httpGet(url, function (text) {
+    var d;
+    try { d = JSON.parse(text); } catch (e) { return weatherFailed(); }
+    if (!d || !d.current || !d.daily) { return weatherFailed(); }
+
+    var cur = d.current;
+    if (cur.time) { renderHeader(cur.time); }
+
+    el("wxIcon").innerHTML = iconHtml(cur.weather_code, 112);
+    el("wxTemp").innerHTML =
+      Math.round(cur.temperature_2m) + '<span class="deg">&deg;</span>';
+    el("wxDesc").innerHTML = weatherLabel(cur.weather_code);
+
+    var hi = Math.round(d.daily.temperature_2m_max[0]);
+    var lo = Math.round(d.daily.temperature_2m_min[0]);
+    var pop = d.daily.precipitation_probability_max[0];
+    el("wxSub").innerHTML =
+      "最高 <b>" + hi + "&deg;</b>　最低 <b>" + lo + "&deg;</b>　"
+      + "降水 <b>" + (pop === null ? "--" : pop) + "%</b>";
+
+    var sr = String(d.daily.sunrise[0]).split("T")[1] || "";
+    var ss = String(d.daily.sunset[0]).split("T")[1] || "";
+    el("wxMeta").innerHTML =
+      "体感 " + Math.round(cur.apparent_temperature) + "&deg;　"
+      + "湿度 " + Math.round(cur.relative_humidity_2m) + "%　"
+      + "風 " + Math.round(cur.wind_speed_10m) + " km/h<br>"
+      + "日の出 " + sr + "　日の入 " + ss;
+
+    /* --- 時間別予報（今から 3 時間おきに 5 コマ） --- */
+    renderHourly(d, cur.time);
+
+    var html = "<tr>", i;
+    for (i = 0; i < d.daily.time.length && i < 7; i++) {
+      var dt = parseISODate(d.daily.time[i]);
+      var dow = dt.getDay();
+      var cls = "";
+      if (dow === 0 || dow === 6) { cls += " weekend"; }
+      if (i === 6) { cls += " last"; }
+      var p = d.daily.precipitation_probability_max[i];
+      var wc = d.daily.weather_code[i];
+      html += '<td class="' + cls + '">'
+        + '<div class="w-day sans">' + (i === 0 ? "今日" : WDAY[dow]) + "</div>"
+        + '<div class="w-date sans">' + (dt.getMonth() + 1) + "/" + dt.getDate() + "</div>"
+        + '<div class="w-icon-wrap">' + iconHtml(wc, 62) + "</div>"
+        + '<div class="w-label sans">' + weatherLabelShort(wc) + "</div>"
+        + '<div class="w-temp sans"><b>' + Math.round(d.daily.temperature_2m_max[i]) + "</b>"
+        + ' <span class="min">' + Math.round(d.daily.temperature_2m_min[i]) + "</span></div>"
+        + '<div class="w-pop sans">' + (p === null ? "--" : p) + "%</div>"
+        + "</td>";
+    }
+    html += "</tr>";
+    el("weekTable").innerHTML = html;
+  }, weatherFailed);
+}
+
+/* 現在時刻以降を 3 時間おきに 5 コマ表示する */
+function renderHourly(d, nowIso) {
+    var node = el("hourly");
+    if (!node || !d.hourly || !d.hourly.time) { return; }
+
+    var times = d.hourly.time;
+    var start = -1, i;
+
+    /* API の現在時刻と同じ「時」の位置を探す */
+    var nowHourKey = String(nowIso).substring(0, 13);   /* "2026-10-04T17" */
+    for (i = 0; i < times.length; i++) {
+        if (String(times[i]).substring(0, 13) === nowHourKey) { start = i; break; }
+    }
+    if (start === -1) { start = 0; }
+
+    var html = "<tr>", shown = 0, idx;
+    for (i = 1; i <= 5; i++) {
+        idx = start + i * 3;
+        if (idx >= times.length) { break; }
+        var hh = String(times[idx]).split("T")[1].substring(0, 5);
+        var tp = d.hourly.precipitation_probability
+               ? d.hourly.precipitation_probability[idx] : null;
+        html += "<td>"
+              + '<div class="h-time sans">' + hh + "</div>"
+              + iconHtml(d.hourly.weather_code[idx], 34)
+              + '<div class="h-temp sans">' + Math.round(d.hourly.temperature_2m[idx]) + "&deg;</div>"
+              + '<div class="h-pop sans">' + (tp === null ? "" : tp + "%") + "</div>"
+              + "</td>";
+        shown++;
+    }
+    html += "</tr>";
+    if (shown > 0) { node.innerHTML = html; }
+}
+
+function weatherFailed() {
+  el("wxDesc").innerHTML = "天気を取得できませんでした";
+  el("wxSub").innerHTML = "Wi-Fi 接続を確認してください";
+  el("wxMeta").innerHTML = "&nbsp;";
+  el("weekTable").innerHTML =
+    '<tr><td colspan="7" class="err sans" style="text-align:left;border:0;">'
+    + "週間予報を取得できませんでした</td></tr>";
+}
+
+/* --- ドル円（Frankfurter：ECB公表レート） ------------------------ */
+function loadFx() {
+  var from = new Date();
+  from.setDate(from.getDate() - 30);
+  var d1 = from.getFullYear() + "-" + pad2(from.getMonth() + 1) + "-" + pad2(from.getDate());
+  var url = "https://api.frankfurter.dev/v1/" + d1 + "..?base=USD&symbols=JPY";
+
+  httpGet(url, function (text) {
+    var d;
+    try { d = JSON.parse(text); } catch (e) { return fxFailed(); }
+    if (!d || !d.rates) { return fxFailed(); }
+
+    var dates = [], k;
+    for (k in d.rates) { if (d.rates.hasOwnProperty(k)) { dates.push(k); } }
+    dates.sort();
+    if (dates.length === 0) { return fxFailed(); }
+
+    var series = [], i;
+    for (i = 0; i < dates.length; i++) { series.push(d.rates[dates[i]].JPY); }
+
+    var last = series[series.length - 1];
+    var prev = series.length > 1 ? series[series.length - 2] : null;
+
+    el("fxValue").innerHTML = fmtNum(last, 2);
+    if (prev !== null) {
+      renderChange("fxChange", last - prev, ((last - prev) / prev) * 100, 2);
+    }
+    drawSpark("fxSpark", series);
+    el("fxAsOf").innerHTML = "ECB " + dates[dates.length - 1];
+  }, fxFailed);
+}
+
+function fxFailed() {
+  el("fxValue").innerHTML = "--";
+  el("fxChange").innerHTML = '<span class="err">取得失敗</span>';
+  el("fxAsOf").innerHTML = "&nbsp;";
+}
+
+/* --- 日経平均：CORS の可否が環境で変わるので順に試す -------------- */
+function loadNikkei() {
+  var to = new Date(), from = new Date();
+  from.setDate(from.getDate() - 45);
+  function ymd(d) {
+    return "" + d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate());
+  }
+  var stooqUrl = "https://stooq.com/q/d/l/?s=%5Enkx&d1=" + ymd(from)
+               + "&d2=" + ymd(to) + "&i=d";
+  var yahooUrl = "https://query1.finance.yahoo.com/v8/finance/chart/"
+               + "%5EN225?range=2mo&interval=1d";
+  var proxies = [
+    "https://api.allorigins.win/raw?url=",
+    "https://corsproxy.io/?url="
+  ];
+
+  var attempts = [];
+  attempts.push({ url: yahooUrl, parse: parseYahoo });
+  attempts.push({ url: stooqUrl, parse: parseStooqCsv });
+  var i;
+  for (i = 0; i < proxies.length; i++) {
+    attempts.push({ url: proxies[i] + encodeURIComponent(stooqUrl), parse: parseStooqCsv });
+    attempts.push({ url: proxies[i] + encodeURIComponent(yahooUrl), parse: parseYahoo });
+  }
+
+  /* 全体の打ち切り時刻。これを過ぎたら残りの候補は試さない */
+  var deadline = (new Date()).getTime() + 25000;
+  var settled = false;
+
+  function tryAt(n) {
+    if (settled) { return; }
+    if (n >= attempts.length || (new Date()).getTime() > deadline) {
+      settled = true;
+      return nikkeiFailed();
+    }
+    httpGet(attempts[n].url, function (text) {
+      if (settled) { return; }
+      var r = attempts[n].parse(text);
+      if (r) { settled = true; renderNikkei(r); } else { tryAt(n + 1); }
+    }, function () { tryAt(n + 1); }, 6000);
+  }
+  tryAt(0);
+}
+
+function parseYahoo(text) {
+  var d;
+  try { d = JSON.parse(text); } catch (e) { return null; }
+  if (!d || !d.chart || !d.chart.result || !d.chart.result[0]) { return null; }
+  var r = d.chart.result[0];
+  if (!r.indicators || !r.indicators.quote || !r.indicators.quote[0]) { return null; }
+  var raw = r.indicators.quote[0].close, ts = r.timestamp;
+  if (!raw || !ts) { return null; }
+  var closes = [], lastTs = null, i;
+  for (i = 0; i < raw.length; i++) {
+    if (raw[i] !== null && !isNaN(raw[i])) { closes.push(raw[i]); lastTs = ts[i]; }
+  }
+  if (closes.length === 0) { return null; }
+  var dt = new Date(lastTs * 1000);
+  return {
+    closes: closes,
+    label: dt.getFullYear() + "-" + pad2(dt.getMonth() + 1) + "-" + pad2(dt.getDate())
+  };
+}
+
+function parseStooqCsv(text) {
+  if (!text || text.indexOf("Date") === -1) { return null; }
+  var lines = text.replace(/\r/g, "").split("\n");
+  var header = lines[0].split(",");
+  var closeIdx = -1, dateIdx = -1, i;
+  for (i = 0; i < header.length; i++) {
+    if (header[i] === "Close") { closeIdx = i; }
+    if (header[i] === "Date") { dateIdx = i; }
+  }
+  if (closeIdx === -1) { return null; }
+  var closes = [], lastDate = "";
+  for (i = 1; i < lines.length; i++) {
+    if (!lines[i]) { continue; }
+    var cols = lines[i].split(",");
+    var v = parseFloat(cols[closeIdx]);
+    if (!isNaN(v)) { closes.push(v); lastDate = cols[dateIdx]; }
+  }
+  if (closes.length === 0) { return null; }
+  return { closes: closes, label: lastDate };
+}
+
+function renderNikkei(r) {
+  var closes = r.closes;
+  var last = closes[closes.length - 1];
+  var prev = closes.length > 1 ? closes[closes.length - 2] : null;
+  el("nkValue").innerHTML = fmtNum(last, 0);
+  if (prev !== null) {
+    renderChange("nkChange", last - prev, ((last - prev) / prev) * 100, 0);
+  }
+  drawSpark("nkSpark", closes);
+  el("nkAsOf").innerHTML = "終値 " + r.label;
+}
+
+function nikkeiFailed() {
+  el("nkValue").innerHTML = "--";
+  el("nkChange").innerHTML = '<span class="err">取得失敗</span>';
+  el("nkAsOf").innerHTML = "&nbsp;";
+}
+
+/* --- 起動 -------------------------------------------------------- */
+layout();
+renderHeader();
+loadWeather();
+loadFx();
+loadNikkei();
+
+setTimeout(function () {
+  window.location.reload();
+}, CONFIG.reloadMinutes * 60 * 1000);
+</script>
+
+</body>
+</html>

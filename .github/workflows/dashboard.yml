@@ -1,26 +1,27 @@
 #
 # Kindle ダッシュボード画像の自動生成
 #
-# Netlify に置いてあるダッシュボードのページを 1 時間おきにスクリーンショットし、
+# リポジトリ内の index.html を 1 時間おきにスクリーンショットし、
 # Kindle 向けの PNG に変換して GitHub Pages に公開する。
 #
-# Kindle 側はこの URL の画像を取りに行くだけでよくなる:
-#   https://<ユーザー名>.github.io/<リポジトリ名>/dash.png
+# 公開されるもの:
+#   https://yoshi10321.github.io/e-inkdashboard/           … ダッシュボード本体（ブラウザ用）
+#   https://yoshi10321.github.io/e-inkdashboard/dash.png      … Kindle 用・縦向き設定（1072x1448・回転済み）
+#   https://yoshi10321.github.io/e-inkdashboard/dash-land.png … Kindle 用・横向き設定（1448x1072・回転なし）
+#                                                                PC での見た目確認にもこちらを使う
 #
 # ---------------------------------------------------------------------------
-# 事前にやること
-#   1. このファイルをリポジトリの .github/workflows/dashboard.yml として置く
-#   2. 下の DASHBOARD_URL を自分の Netlify の URL に書き換える
-#   3. GitHub のリポジトリ設定 → Pages → Source を「GitHub Actions」にする
-#   4. Actions タブから一度手動実行（Run workflow）して動作確認
+# 事前にやること（初回のみ）
+#   リポジトリ設定 → Pages → Source を「GitHub Actions」にする
 # ---------------------------------------------------------------------------
 
 name: Render Kindle Dashboard
 
 on:
+  push:
+    branches: [main]        # index.html を直せば自動で作り直す
   schedule:
     # 毎時 5 分に実行（UTC 基準だが毎時なので時差は無関係）
-    # 間隔を変えたいときはここを書き換える。例: 3 時間おき → '5 */3 * * *'
     - cron: '5 * * * *'
   workflow_dispatch:        # 手動実行も可能にする
 
@@ -36,11 +37,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # ★ ここを自分の Netlify の URL に書き換える（末尾の #flat は必須）
-  #   #flat を付けると CSS の 90 度回転が無効になり、横長のまま描画される。
-  #   回転は後段の ImageMagick でまとめて行う。
-  DASHBOARD_URL: 'https://e-inkdashboard.netlify.app/#flat'
-
   # ブラウザの描画ビューポート（横長）。CSS はこの寸法前提で組んである。
   VIEWPORT_WIDTH: '1024'
   VIEWPORT_HEIGHT: '758'
@@ -57,6 +53,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - uses: actions/checkout@v4
+
       - name: 日本語フォントと ImageMagick を入れる
         # ・fonts-noto-cjk : ランナーには日本語フォントが無く、入れないと本文が豆腐（□）になる
         # ・imagemagick    : 画像の回転とグレースケール化に使う。ランナーに標準では入っていない
@@ -74,12 +72,25 @@ jobs:
           npm install --no-fund --no-audit playwright
           npx playwright install --with-deps chromium
 
+      - name: ローカルサーバーを起動
+        # file:// で開くと一部ブラウザ機能の扱いが変わるため、
+        # 実際の配信と同じ http:// で読み込ませる。
+        run: |
+          python3 -m http.server 8000 --bind 127.0.0.1 >/dev/null 2>&1 &
+          for i in $(seq 1 20); do
+            curl -sf http://127.0.0.1:8000/ >/dev/null && break
+            sleep 0.5
+          done
+          echo "ローカルサーバー起動 OK"
+
       - name: ページをスクリーンショット
         run: |
           cat > shot.mjs <<'EOF'
           import { chromium } from 'playwright';
 
-          const url    = process.env.DASHBOARD_URL;
+          // #flat を付けると CSS の 90 度回転が無効になり、横長のまま描画される。
+          // 回転は後段の ImageMagick でまとめて行う。
+          const url    = 'http://127.0.0.1:8000/#flat';
           const width  = Number(process.env.VIEWPORT_WIDTH);
           const height = Number(process.env.VIEWPORT_HEIGHT);
 
@@ -92,22 +103,19 @@ jobs:
           console.log('開く:', url);
           await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
 
-          // ページ内の天気・為替・日経の取得が終わるのを待つ。
+          // 天気・為替・日経の取得が終わるのを待つ。
           // 「--」のままの枠が無くなるか、最長 30 秒で打ち切る。
           await page.waitForFunction(() => {
             const ids = ['wxTemp', 'fxValue', 'nkValue'];
-            const pending = ids.filter(function (id) {
+            return ids.every(function (id) {
               const node = document.getElementById(id);
-              return !node || node.textContent.indexOf('--') !== -1;
+              return node && node.textContent.indexOf('--') === -1;
             });
-            return pending.length === 0;
           }, null, { timeout: 30000 }).catch(function () {
             console.log('一部のデータが取得できませんでした。そのまま撮影します。');
           });
 
-          // 描画の落ち着きを待つ
-          await page.waitForTimeout(1500);
-
+          await page.waitForTimeout(1500);   // 描画の落ち着きを待つ
           await page.screenshot({ path: 'raw.png' });
           await browser.close();
           console.log('撮影完了');
@@ -115,9 +123,9 @@ jobs:
           node shot.mjs
 
       - name: Kindle 向けの PNG に変換
-        # ・2 倍で撮ったものを等倍に縮小（アンチエイリアスが効いて文字が綺麗になる）
-        # ・時計回りに 90 度回転して 758 x 1024 の縦長にする
-        # ・16 階調グレースケールにする（E-ink の表現力に合わせ、ファイルも軽くなる）
+        # ・2 倍で撮ったものを出力サイズに合わせる（アンチエイリアスが効いて文字が綺麗になる）
+        # ・時計回りに 90 度回転して 1072 x 1448 の縦長にする
+        # ・グレースケール 8bit にする（E-ink に合わせ、ファイルも軽くなる）
         run: |
           set -e
           mkdir -p public
@@ -136,14 +144,18 @@ jobs:
             -strip \
             public/dash.png
 
-          # 中身の確認用に、回転前の横長版も置いておく（PC から見るとき用）
+          # 端末の画面の向きを横向きに設定できた場合は、回転なしのこちらを使う。
+          # PC から見た目を確認するときもこちらが読みやすい。
           "$IM" raw.png \
             -resize ${OUT_WIDTH}x${OUT_HEIGHT}! \
             -colorspace Gray -type Grayscale -depth 8 -strip \
-            public/preview.png
+            public/dash-land.png
+
+          # ダッシュボード本体もそのまま公開する（ブラウザから見たいとき用）
+          cp index.html public/index.html
 
           echo "--- 生成結果 ---"
-          identify public/dash.png public/preview.png
+          identify public/dash.png public/dash-land.png
           ls -lh public/
 
       - uses: actions/configure-pages@v5
