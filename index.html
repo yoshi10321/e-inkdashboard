@@ -533,6 +533,12 @@ function loadWeather() {
   httpGet(url, function (text) {
     var d;
     try { d = JSON.parse(text); } catch (e) { return weatherFailed(); }
+    renderWeather(d);
+  }, weatherFailed);
+}
+
+/* 天気の描画。API から直接取った場合も data.json 経由の場合も同じ形。 */
+function renderWeather(d) {
     if (!d || !d.current || !d.daily) { return weatherFailed(); }
 
     var cur = d.current;
@@ -582,7 +588,6 @@ function loadWeather() {
     }
     html += "</tr>";
     el("weekTable").innerHTML = html;
-  }, weatherFailed);
 }
 
 /* 現在時刻以降を 3 時間おきに 5 コマ表示する */
@@ -651,13 +656,26 @@ function loadFx() {
     var last = series[series.length - 1];
     var prev = series.length > 1 ? series[series.length - 2] : null;
 
-    el("fxValue").innerHTML = fmtNum(last, 2);
-    if (prev !== null) {
-      renderChange("fxChange", last - prev, ((last - prev) / prev) * 100, 2);
-    }
-    drawSpark("fxSpark", series);
-    el("fxAsOf").innerHTML = "ECB " + dates[dates.length - 1];
+    renderSeries("fx", {
+      series: series, last: last, prev: prev,
+      label: "ECB " + dates[dates.length - 1]
+    }, 2);
   }, fxFailed);
+}
+
+/* 為替・日経に共通の描画。data.json から読んだ場合もここを通る。
+   kind は "fx" か "nk"。digits は小数桁数。 */
+function renderSeries(kind, o, digits) {
+    if (!o || o.last === null || o.last === undefined) {
+      return kind === "fx" ? fxFailed() : nikkeiFailed();
+    }
+    el(kind + "Value").innerHTML = fmtNum(o.last, digits);
+    if (o.prev !== null && o.prev !== undefined) {
+      renderChange(kind + "Change", o.last - o.prev,
+                   ((o.last - o.prev) / o.prev) * 100, digits);
+    }
+    if (o.series) { drawSpark(kind + "Spark", o.series); }
+    el(kind + "AsOf").innerHTML = o.label || "";
 }
 
 function fxFailed() {
@@ -753,14 +771,12 @@ function parseStooqCsv(text) {
 
 function renderNikkei(r) {
   var closes = r.closes;
-  var last = closes[closes.length - 1];
-  var prev = closes.length > 1 ? closes[closes.length - 2] : null;
-  el("nkValue").innerHTML = fmtNum(last, 0);
-  if (prev !== null) {
-    renderChange("nkChange", last - prev, ((last - prev) / prev) * 100, 0);
-  }
-  drawSpark("nkSpark", closes);
-  el("nkAsOf").innerHTML = "終値 " + r.label;
+  renderSeries("nk", {
+    series: closes,
+    last: closes[closes.length - 1],
+    prev: closes.length > 1 ? closes[closes.length - 2] : null,
+    label: "終値 " + r.label
+  }, 0);
 }
 
 function nikkeiFailed() {
@@ -769,12 +785,34 @@ function nikkeiFailed() {
   el("nkAsOf").innerHTML = "&nbsp;";
 }
 
-/* --- 起動 -------------------------------------------------------- */
+/* --- 起動 --------------------------------------------------------
+   まず data.json を読みに行く。これは GitHub Actions がサーバー側で
+   取得してまとめたもので、CORS や相手側の制限の影響を受けない。
+   見つからなければ（ブラウザで単体で開いた場合など）従来どおり
+   各 API を直接叩く。 */
+
+function startWithLiveApis() {
+  loadWeather();
+  loadFx();
+  loadNikkei();
+}
+
+function start() {
+  httpGet("data.json?t=" + (new Date()).getTime(), function (text) {
+    var d;
+    try { d = JSON.parse(text); } catch (e) { return startWithLiveApis(); }
+    if (!d) { return startWithLiveApis(); }
+
+    /* 個別に欠けている場合は、その項目だけ直接取得に切り替える */
+    if (d.weather) { renderWeather(d.weather); } else { loadWeather(); }
+    if (d.fx)      { renderSeries("fx", d.fx, 2); } else { loadFx(); }
+    if (d.nikkei)  { renderSeries("nk", d.nikkei, 0); } else { loadNikkei(); }
+  }, startWithLiveApis, 8000);
+}
+
 layout();
 renderHeader();
-loadWeather();
-loadFx();
-loadNikkei();
+start();
 
 setTimeout(function () {
   window.location.reload();

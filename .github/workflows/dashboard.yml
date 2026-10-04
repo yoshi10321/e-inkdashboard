@@ -81,6 +81,12 @@ jobs:
           npm install --no-fund --no-audit playwright
           npx playwright install --with-deps chromium
 
+      - name: 表示するデータを取得する
+        # ブラウザから直接 API を叩くと CORS や相手側の制限で失敗することがあるため、
+        # ここ（サーバー側）でまとめて取得して data.json に書き出す。
+        # 一部が取れなくてもワークフローは止めない。
+        run: python3 fetch_data.py
+
       - name: ローカルサーバーを起動
         # file:// で開くと一部ブラウザ機能の扱いが変わるため、
         # 実際の配信と同じ http:// で読み込ませる。
@@ -160,8 +166,10 @@ jobs:
             -colorspace Gray -type Grayscale -depth 8 -strip \
             public/dash-land.png
 
-          # ダッシュボード本体もそのまま公開する（ブラウザから見たいとき用）
+          # ダッシュボード本体と取得済みデータも公開する
+          # （ブラウザから見るときも同じデータが使われる）
           cp index.html public/index.html
+          cp data.json  public/data.json
 
           # --- バッテリー表示用の小さな画像を 5% 刻みで作る ---
           # Kindle 標準のような電池アイコン（枠＋残量ぶんの塗り＋右の突起）を描く。
