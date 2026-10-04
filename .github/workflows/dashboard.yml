@@ -6,9 +6,13 @@
 #
 # 公開されるもの:
 #   https://yoshi10321.github.io/e-inkdashboard/           … ダッシュボード本体（ブラウザ用）
-#   https://yoshi10321.github.io/e-inkdashboard/dash.png      … Kindle 用・縦向き設定（1072x1448・回転済み）
-#   https://yoshi10321.github.io/e-inkdashboard/dash-land.png … Kindle 用・横向き設定（1448x1072・回転なし）
-#                                                                PC での見た目確認にもこちらを使う
+#   https://yoshi10321.github.io/e-inkdashboard/dash.png      … Kindle 用（1072x1448・反時計回りに90度回転済み）
+#   https://yoshi10321.github.io/e-inkdashboard/dash-land.png … 確認用（1448x1072・回転なし）
+#   https://yoshi10321.github.io/e-inkdashboard/bat/NN.png    … バッテリー表示（5%刻み・回転済み）
+#
+# 反時計回りに回すことで、ダッシュボードの「右上」が端末の左上(0,0)に来る。
+# eips は画像を左上に描くため、そこにバッテリー画像を重ねると
+# 横向き設置したときの「画面上部」に正しい向きで表示できる。
 #
 # ---------------------------------------------------------------------------
 # 事前にやること（初回のみ）
@@ -47,6 +51,11 @@ env:
   # 1448:1072 は 1024:758 とほぼ同じ縦横比なので、レイアウトは崩れない。
   OUT_WIDTH: '1448'
   OUT_HEIGHT: '1072'
+
+  # バッテリー表示画像のサイズ（回転前・横長）。
+  # ダッシュボード側でこのぶんの余白を右上に空けてある。
+  BAT_WIDTH: '150'
+  BAT_HEIGHT: '64'
 
 jobs:
   render:
@@ -137,7 +146,7 @@ jobs:
 
           "$IM" raw.png \
             -resize ${OUT_WIDTH}x${OUT_HEIGHT}! \
-            -rotate 90 \
+            -rotate -90 \
             -colorspace Gray \
             -type Grayscale \
             -depth 8 \
@@ -153,6 +162,21 @@ jobs:
 
           # ダッシュボード本体もそのまま公開する（ブラウザから見たいとき用）
           cp index.html public/index.html
+
+          # --- バッテリー表示用の小さな画像を 5% 刻みで作る ---
+          # 横書きで作ってから本体と同じ向き（反時計回り90度）に回すので、
+          # 端末の左上に重ねて描くとダッシュボードの右上に正しい向きで出る。
+          mkdir -p public/bat
+          for lv in $(seq 0 5 100); do
+            "$IM" -size ${BAT_WIDTH}x${BAT_HEIGHT} xc:white \
+              -font DejaVu-Sans-Bold -pointsize 42 -fill black -gravity center \
+              -annotate +0+0 "${lv}%" \
+              -rotate -90 \
+              -colorspace Gray -type Grayscale -depth 8 -strip \
+              "public/bat/${lv}.png"
+          done
+          echo "バッテリー画像 $(ls public/bat | wc -l) 枚を生成"
+
 
           echo "--- 生成結果 ---"
           identify public/dash.png public/dash-land.png

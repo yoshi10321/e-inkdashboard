@@ -18,21 +18,19 @@
 
 # ===== 設定 =========================================================
 
-# 画面の向き
-#   portrait  : 端末は縦向きのまま。回転済みの画像を表示するので、
-#               Kindle 本体を横に倒して置く。（確実に動く）
-#   landscape : 端末の画面自体を横向きに設定し、回転なしの画像を表示する。
-#               バッテリー表示の文字も正しい向きになる。
-#               ただし機種・ファームによっては向きの変更が効かない。
-ORIENTATION="landscape"
+# 表示する画像の URL
+#   dash.png は反時計回りに90度回転済み。Kindle を「横向き」に置くと正しく読める。
+#   （端末の画面の向き設定 orientationLock は第7世代では効かないため、画像側で回す）
+IMG_URL="https://yoshi10321.github.io/e-inkdashboard/dash.png"
 
-# 画面を横向きにするときの回転方向。landscape が傾いて見えたら
-# "L" と "R" を入れ替えて試すこと。
-LANDSCAPE_DIR="L"
+# バッテリー残量の表示
+#   SHOW_BATTERY=1 のとき、残量に応じた小さな画像を端末の左上に重ねて描く。
+#   dash.png は反時計回りに回してあるので、そこは横向き設置時の「画面上部（右寄り）」にあたる。
+SHOW_BATTERY=1
+BAT_URL_BASE="https://yoshi10321.github.io/e-inkdashboard/bat"
 
-# 表示する画像の URL（ORIENTATION に応じて自動で選ぶ）
-IMG_URL_PORTRAIT="https://yoshi10321.github.io/e-inkdashboard/dash.png"
-IMG_URL_LANDSCAPE="https://yoshi10321.github.io/e-inkdashboard/dash-land.png"
+# Kindle 標準のステータスバー（時計など）を隠すか
+HIDE_STATUS_BAR=1
 
 # 更新間隔（秒）。3600 = 1時間
 INTERVAL=3600
@@ -40,11 +38,6 @@ INTERVAL=3600
 # バッテリー残量を画面の隅に重ねて表示するか（1=する / 0=しない）
 SHOW_BATTERY=1
 
-# バッテリー表示の位置（eips の文字単位の座標。列 行）
-# 画像は 90 度回転して表示しているため、この文字も 90 度傾いて出る。
-# 位置が気に入らなければこの2つの数字を変えて調整すること。
-BATTERY_COL=0
-BATTERY_ROW=0
 
 # 動作モード
 #   awake   : サスペンドしない。動作確認用。電池はどんどん減る。
@@ -53,12 +46,6 @@ BATTERY_ROW=0
 MODE="awake"
 
 # ====================================================================
-
-if [ "$ORIENTATION" = "landscape" ]; then
-    IMG_URL="$IMG_URL_LANDSCAPE"
-else
-    IMG_URL="$IMG_URL_PORTRAIT"
-fi
 
 WORKDIR=/mnt/us
 IMG="$WORKDIR/dashboard.png"
@@ -82,17 +69,13 @@ log "===== 起動 (mode=$MODE interval=${INTERVAL}s) ====="
 # （log() は直接ファイルへ書くので、この後もログは残る）
 exec >/dev/null 2>&1
 
-# --- 画面の向き -----------------------------------------------------
+# --- ステータスバー -------------------------------------------------
 
-# 端末の画面の向きを設定する。
-#   U=縦（標準） / L=左回転 / R=右回転 / D=上下逆
-set_orientation() {
-    dir=$1
-    # UI フレームワーク側の向きを変える
-    lipc-set-prop com.lab126.winmgr orientationLock "$dir" 2>>"$LOG"
-    rc=$?
-    log "画面の向きを $dir に設定 (終了コード $rc)"
-    sleep 2
+# Kindle 標準の上部ステータスバー（時計・電池アイコンなど）の表示を切り替える。
+# 1 で非表示、0 で再表示。
+set_status_bar() {
+    lipc-set-prop com.lab126.pillow disableEnablePillow "$1" 2>>"$LOG"
+    log "ステータスバー disableEnablePillow=$1 (終了コード $?)"
 }
 
 # --- Wi-Fi 制御 -----------------------------------------------------
@@ -162,6 +145,44 @@ is_charging() {
     [ "$st" = "1" ]
 }
 
+# 残量を 5% 刻みに丸める（用意してある画像に合わせる）
+round_to_5() {
+    v=$1
+    [ -z "$v" ] && { echo ""; return; }
+    echo $(( (v + 2) / 5 * 5 ))
+}
+
+# バッテリー画像を取得して、端末の左上に重ねて描く。
+# dash.png は反時計回りに回してあるので、左上＝横向き設置時の画面上部にあたる。
+draw_battery() {
+    [ "$SHOW_BATTERY" = "1" ] || return 0
+
+    bat=$(battery_level)
+    [ -n "$bat" ] || { log "電池残量を取得できず"; return 1; }
+
+    if is_charging; then mark="（充電中）"; else mark=""; fi
+    log "電池 ${bat}% ${mark}"
+
+    lv=$(round_to_5 "$bat")
+    [ "$lv" -gt 100 ] 2>/dev/null && lv=100
+
+    bimg="$WORKDIR/bat_${lv}.png"
+    if [ ! -f "$bimg" ]; then
+        wget -q --no-check-certificate -O "$bimg.tmp" "$BAT_URL_BASE/${lv}.png" 2>>"$LOG"
+        if [ -s "$bimg.tmp" ] && head -c 4 "$bimg.tmp" | grep -q "PNG"; then
+            mv "$bimg.tmp" "$bimg"
+        else
+            rm -f "$bimg.tmp"
+            log "バッテリー画像 ${lv}.png を取得できなかった"
+            return 1
+        fi
+    fi
+
+    # eips は画像を左上 (0,0) に等倍で描く。小さい画像なのでその部分だけ上書きされる。
+    eips -g "$bimg" >/dev/null 2>&1
+    return 0
+}
+
 show_image() {
     [ -f "$IMG" ] || { log "表示する画像がない"; return 1; }
 
@@ -169,18 +190,9 @@ show_image() {
     eips -c >/dev/null 2>&1
     sleep 1
     eips -g "$IMG" >/dev/null 2>&1
+    log "描画完了"
 
-    bat=$(battery_level)
-    if [ -n "$bat" ]; then
-        if is_charging; then mark="+"; else mark=""; fi
-        log "描画完了 (電池 ${bat}%${mark})"
-        if [ "$SHOW_BATTERY" = "1" ]; then
-            # eips の文字描画は画像の上に重ねて書かれる
-            eips "$BATTERY_COL" "$BATTERY_ROW" " ${bat}%${mark} " >/dev/null 2>&1
-        fi
-    else
-        log "描画完了 (電池残量を取得できず)"
-    fi
+    draw_battery
     return 0
 }
 
@@ -211,18 +223,16 @@ suspend_for() {
 cleanup() {
     log "===== 終了 ====="
     lipc-set-prop com.lab126.powerd preventScreenSaver 0 2>/dev/null
-    lipc-set-prop com.lab126.winmgr orientationLock U 2>/dev/null
+    lipc-set-prop com.lab126.pillow disableEnablePillow 0 2>/dev/null
     exit 0
 }
 trap cleanup INT TERM
 
 # --- メインループ ---------------------------------------------------
 
-# 画面の向きを設定する
-if [ "$ORIENTATION" = "landscape" ]; then
-    set_orientation "$LANDSCAPE_DIR"
-else
-    set_orientation "U"
+# Kindle 標準のステータスバーを隠す
+if [ "$HIDE_STATUS_BAR" = "1" ]; then
+    set_status_bar 1
 fi
 
 # awake モードではスクリーンセーバーに入られると画像が消えるので抑止する
