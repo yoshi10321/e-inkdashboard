@@ -51,12 +51,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 日本語フォントを入れる
-        # ランナーには日本語フォントが入っていないため、
-        # これが無いと本文がすべて豆腐（□）になる。
+      - name: 日本語フォントと ImageMagick を入れる
+        # ・fonts-noto-cjk : ランナーには日本語フォントが無く、入れないと本文が豆腐（□）になる
+        # ・imagemagick    : 画像の回転とグレースケール化に使う。ランナーに標準では入っていない
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq fonts-noto-cjk fonts-noto-cjk-extra
+          sudo apt-get install -y -qq fonts-noto-cjk fonts-noto-cjk-extra imagemagick
 
       - uses: actions/setup-node@v4
         with:
@@ -113,21 +113,28 @@ jobs:
         # ・時計回りに 90 度回転して 758 x 1024 の縦長にする
         # ・16 階調グレースケールにする（E-ink の表現力に合わせ、ファイルも軽くなる）
         run: |
+          set -e
           mkdir -p public
-          convert raw.png \
+
+          # ImageMagick 7 は magick、6 は convert。どちらでも動くようにする。
+          IM="$(command -v magick || command -v convert)"
+          echo "ImageMagick: $IM"
+          "$IM" -version | head -n 1
+
+          "$IM" raw.png \
             -resize ${RENDER_WIDTH}x${RENDER_HEIGHT}! \
             -rotate 90 \
             -colorspace Gray \
+            -type Grayscale \
             -depth 8 \
-            -colors 16 \
             -strip \
-            PNG8:public/dash.png
+            public/dash.png
 
           # 中身の確認用に、回転前の横長版も置いておく（PC から見るとき用）
-          convert raw.png \
+          "$IM" raw.png \
             -resize ${RENDER_WIDTH}x${RENDER_HEIGHT}! \
-            -colorspace Gray -depth 8 -colors 16 -strip \
-            PNG8:public/preview.png
+            -colorspace Gray -type Grayscale -depth 8 -strip \
+            public/preview.png
 
           echo "--- 生成結果 ---"
           identify public/dash.png public/preview.png
