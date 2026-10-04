@@ -27,6 +27,9 @@ on:
   schedule:
     # 毎時 5 分に実行（UTC 基準だが毎時なので時差は無関係）
     - cron: '5 * * * *'
+    # 日付が変わった直後にも作り直す。GitHub の cron は UTC なので
+    # 15:00 UTC = 翌 00:00 JST。
+    - cron: '0 15 * * *'
   workflow_dispatch:        # 手動実行も可能にする
 
 # GitHub Pages への公開に必要な権限
@@ -122,6 +125,10 @@ jobs:
           const page = await browser.newPage({
             viewport: { width, height },
             deviceScaleFactor: scale,
+            // ランナーの時計は UTC。日本時間で描かせないと
+            // 0時〜9時のあいだ日付が 1日前になる。
+            timezoneId: 'Asia/Tokyo',
+            locale: 'ja-JP',
           });
           console.log('描画倍率:', scale, '→', Math.round(width * scale) + 'x' + Math.round(height * scale));
 

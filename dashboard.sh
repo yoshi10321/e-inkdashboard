@@ -39,6 +39,7 @@
 
 IMG_URL="https://yoshi10321.github.io/e-inkdashboard/dash.png"
 BAT_URL_BASE="https://yoshi10321.github.io/e-inkdashboard/bat"
+DATA_URL="https://yoshi10321.github.io/e-inkdashboard/data.json"
 
 # 更新間隔（秒）。3600 = 1時間
 INTERVAL=3600
@@ -55,6 +56,12 @@ STOP_FRAMEWORK=1
 
 # バッテリー残量のアイコンを重ねて表示するか
 SHOW_BATTERY=1
+
+# 毎日 0時ちょうどにも更新するか
+#   1 : INTERVAL とは別に、日付が変わった瞬間にも起きて更新する。
+#       画面の日付が変わるのを待たずに済む。
+#   0 : INTERVAL の間隔だけで動く。
+UPDATE_AT_MIDNIGHT=1
 
 # ====================================================================
 
@@ -185,6 +192,33 @@ download_png() {
         log "wget 失敗: $url"
     fi
     rm -f "$dest.tmp"
+    return 1
+}
+
+# 公開されている画像が「今日のぶん」になるまで待つ。
+#
+# 0時ちょうどに起きても、画像を作る GitHub Actions 側はまだ前日ぶんを
+# 出していることがある。data.json には作った時刻（日本時間）が入っているので、
+# それが今日の日付になるまで少しだけ待つ。
+#
+# 待っても変わらなければ、前日ぶんの画像でそのまま進む。
+# 次の正時にはどのみち新しくなる。
+wait_for_todays_image() {
+    today=$(date '+%Y-%m-%d')
+    i=0
+    while [ $i -lt 6 ]; do
+        gen=$(wget -q --no-check-certificate -O - "${DATA_URL}?t=$(date +%s)" 2>/dev/null |
+              sed -n 's/.*"generated":"\([^"]*\)".*/\1/p')
+        case "$gen" in
+            "$today"*)
+                [ $i -gt 0 ] && log "今日ぶんの画像ができた（${i}回待った）"
+                return 0 ;;
+        esac
+        i=$((i + 1))
+        log "画像がまだ前日ぶん (generated=${gen:-不明})。60秒待つ"
+        sleep 60
+    done
+    log "今日ぶんの画像を待ちきれなかった。前日ぶんのまま進む"
     return 1
 }
 
@@ -332,12 +366,32 @@ while true; do
 
     # 次に更新する時刻を先に決めておく。
     # 通信や描画にかかった時間ぶん間隔がずれていくのを防ぐ。
-    NEXT=$(( $(date +%s) + INTERVAL ))
+    NOW=$(date +%s)
+    NEXT=$(( NOW + INTERVAL ))
+
+    # 今日の 0時からの経過秒数。
+    # date の出力は 08 のように 0 で始まるので、八進数と解釈されないよう剥がす。
+    SECS_TODAY=$(( $(date '+%H' | sed 's/^0*//;s/^$/0/') * 3600 \
+                 + $(date '+%M' | sed 's/^0*//;s/^$/0/') * 60 \
+                 + $(date '+%S' | sed 's/^0*//;s/^$/0/') ))
+
+    # 次の 0時が INTERVAL より先に来るなら、そちらを優先する
+    if [ "$UPDATE_AT_MIDNIGHT" = "1" ]; then
+        midnight=$(( NOW + 86400 - SECS_TODAY ))
+        if [ "$midnight" -lt "$NEXT" ]; then
+            NEXT=$midnight
+            log "次は 0時に更新する（$(( (NEXT - NOW) / 60 ))分後）"
+        fi
+    fi
 
     # 1. ネットワーク作業は UI が動いている状態で行う
     start_framework
     wifi_on
     if wait_online; then
+        # 0時を回った直後に起きたときは、画像が今日ぶんになるのを少し待つ
+        if [ "$UPDATE_AT_MIDNIGHT" = "1" ] && [ "$SECS_TODAY" -lt 600 ]; then
+            wait_for_todays_image
+        fi
         fetch_all
     else
         log "オフラインのため前回の画像を表示する"

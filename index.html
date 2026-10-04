@@ -804,6 +804,11 @@ function start() {
     try { d = JSON.parse(text); } catch (e) { return startWithLiveApis(); }
     if (!d) { return startWithLiveApis(); }
 
+    /* 日付は data.json の generated（日本時間で書かれている）を使う。
+       画像を作っているのは GitHub Actions のランナーで、そちらの時計は UTC。
+       ブラウザ任せにすると日本時間の 0時〜9時のあいだ 1日前の日付が出る。 */
+    if (d.generated) { renderHeader(d.generated); }
+
     /* 個別に欠けている場合は、その項目だけ直接取得に切り替える */
     if (d.weather) { renderWeather(d.weather); } else { loadWeather(); }
     if (d.fx)      { renderSeries("fx", d.fx, 2); } else { loadFx(); }
