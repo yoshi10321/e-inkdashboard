@@ -9,6 +9,8 @@ index.html は data.json があればそれを使い、無ければ従来どお�
 どれか一つが失敗しても、残りは出力する。
 """
 
+import gzip
+import io
 import json
 import sys
 import urllib.request
@@ -24,14 +26,27 @@ TZ = "Asia/Tokyo"
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
 
 
-def get(url, tries=3, timeout=20):
+def get(url, tries=3, timeout=20, headers=None):
     """単純な GET。失敗したら少し待って再試行する。"""
+    h = {
+        "User-Agent": UA,
+        "Accept": "*/*",
+        # gzip で返されると扱いが面倒なので、できれば生で欲しいと伝える
+        "Accept-Encoding": "identity",
+    }
+    if headers:
+        h.update(headers)
+
     last = None
     for i in range(tries):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": UA})
+            req = urllib.request.Request(url, headers=h)
             with urllib.request.urlopen(req, timeout=timeout) as r:
-                return r.read().decode("utf-8", "replace")
+                raw = r.read()
+                # それでも gzip で返ってくる相手がいる
+                if raw[:2] == b"\x1f\x8b":
+                    raw = gzip.GzipFile(fileobj=io.BytesIO(raw)).read()
+                return raw.decode("utf-8", "replace")
         except Exception as e:          # noqa: BLE001 - 失敗理由は問わず再試行する
             last = e
             print(f"  試行 {i + 1}/{tries} 失敗: {e}", file=sys.stderr)
@@ -39,6 +54,28 @@ def get(url, tries=3, timeout=20):
                 import time
                 time.sleep(2 * (i + 1))
     raise RuntimeError(f"取得できませんでした: {url} ({last})")
+
+
+def parse_date_value_csv(text, what):
+    """「日付,値」の2列以上の CSV から、値のある行だけを拾う。
+    FRED は欠損日を "." で表すので、それは飛ばす。"""
+    lines = [l for l in text.replace("\r", "").split("\n") if l.strip()]
+    if len(lines) < 2:
+        raise RuntimeError(f"{what}: 行が足りない（先頭: {text[:120]!r}）")
+
+    values, last_date = [], ""
+    for line in lines[1:]:
+        cols = line.split(",")
+        if len(cols) < 2:
+            continue
+        try:
+            values.append(float(cols[1]))
+            last_date = cols[0]
+        except ValueError:
+            continue        # "." など
+    if not values:
+        raise RuntimeError(f"{what}: 数値を取り出せなかった（先頭: {text[:120]!r}）")
+    return values, last_date
 
 
 # --- 天気 -----------------------------------------------------------
@@ -80,19 +117,35 @@ def fetch_fx():
 
 
 # --- 日経平均 -------------------------------------------------------
-# ブラウザからは CORS で弾かれるが、サーバーからなら普通に取れる。
+# ブラウザからは CORS で弾かれる。サーバーからでも、Stooq や Yahoo は
+# データセンターの IP からの取得を断ることがある。
+# そのため取得元を複数用意して、取れたところを使う。
+
+def _nikkei_from_fred():
+    """セントルイス連銀 (FRED) の NIKKEI225。API キー不要で、
+    クラウドからの取得も断られにくい。前営業日までの終値。"""
+    to = datetime.now(JST)
+    frm = to - timedelta(days=90)
+    url = ("https://fred.stlouisfed.org/graph/fredgraph.csv?id=NIKKEI225"
+           f"&cosd={frm.strftime('%Y-%m-%d')}&coed={to.strftime('%Y-%m-%d')}")
+    closes, last_date = parse_date_value_csv(get(url), "FRED")
+    return closes[-60:], last_date
+
 
 def _nikkei_from_stooq():
     to = datetime.now(JST)
-    frm = to - timedelta(days=60)
+    frm = to - timedelta(days=90)
     url = (
         "https://stooq.com/q/d/l/?s=%5Enkx"
         f"&d1={frm.strftime('%Y%m%d')}&d2={to.strftime('%Y%m%d')}&i=d"
     )
     text = get(url)
+    if "limit" in text.lower() and "," not in text:
+        # 「Exceeded the daily hits limit」が本文で返ってくることがある
+        raise RuntimeError(f"Stooq に断られた: {text.strip()[:80]}")
     lines = [l for l in text.replace("\r", "").split("\n") if l.strip()]
-    if not lines or "Date" not in lines[0]:
-        raise RuntimeError("Stooq の CSV が想定と違う")
+    if not lines or "Close" not in lines[0]:
+        raise RuntimeError(f"Stooq の CSV が想定と違う（先頭: {text[:120]!r}）")
     header = lines[0].split(",")
     ci, di = header.index("Close"), header.index("Date")
     closes, last_date = [], ""
@@ -108,11 +161,16 @@ def _nikkei_from_stooq():
     return closes, last_date
 
 
-def _nikkei_from_yahoo():
-    url = ("https://query1.finance.yahoo.com/v8/finance/chart/"
-           "%5EN225?range=2mo&interval=1d")
-    d = json.loads(get(url))
-    r = d["chart"]["result"][0]
+def _nikkei_from_yahoo(host="query1"):
+    url = (f"https://{host}.finance.yahoo.com/v8/finance/chart/"
+           "%5EN225?range=3mo&interval=1d")
+    d = json.loads(get(url, headers={"Accept": "application/json"}))
+    chart = d.get("chart") or {}
+    if chart.get("error"):
+        raise RuntimeError(f"Yahoo がエラーを返した: {chart['error']}")
+    r = (chart.get("result") or [None])[0]
+    if not r:
+        raise RuntimeError("Yahoo の応答に result が無い")
     raw = r["indicators"]["quote"][0]["close"]
     ts = r["timestamp"]
     closes, last_ts = [], None
@@ -126,20 +184,32 @@ def _nikkei_from_yahoo():
     return closes, label
 
 
+NIKKEI_SOURCES = (
+    ("FRED", _nikkei_from_fred),
+    ("Stooq", _nikkei_from_stooq),
+    ("Yahoo(query1)", lambda: _nikkei_from_yahoo("query1")),
+    ("Yahoo(query2)", lambda: _nikkei_from_yahoo("query2")),
+)
+
+
 def fetch_nikkei():
     errors = []
-    for name, fn in (("Stooq", _nikkei_from_stooq), ("Yahoo", _nikkei_from_yahoo)):
+    for name, fn in NIKKEI_SOURCES:
+        print(f"  {name} を試す")
         try:
             closes, label = fn()
-            print(f"  日経は {name} から取得できた")
-            return {
-                "series": closes,
-                "last": closes[-1],
-                "prev": closes[-2] if len(closes) > 1 else None,
-                "label": "終値 " + label,
-            }
         except Exception as e:          # noqa: BLE001
+            print(f"    だめだった: {e}", file=sys.stderr)
             errors.append(f"{name}: {e}")
+            continue
+        print(f"  日経は {name} から取得できた（{len(closes)}件, 最終 {label}）")
+        return {
+            "series": closes,
+            "last": closes[-1],
+            "prev": closes[-2] if len(closes) > 1 else None,
+            "label": "終値 " + label,
+            "source": name,
+        }
     raise RuntimeError(" / ".join(errors))
 
 
@@ -147,6 +217,7 @@ def fetch_nikkei():
 
 def main():
     out = {"generated": datetime.now(JST).strftime("%Y-%m-%dT%H:%M")}
+    errors = {}
     failed = []
 
     for key, fn, label in (
@@ -161,7 +232,12 @@ def main():
         except Exception as e:          # noqa: BLE001
             print(f"  失敗: {e}", file=sys.stderr)
             out[key] = None
+            # Actions のログは後から読みにくいので、失敗理由も公開物に残す
+            errors[key] = str(e)[:600]
             failed.append(label)
+
+    if errors:
+        out["errors"] = errors
 
     with open("data.json", "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, separators=(",", ":"))
