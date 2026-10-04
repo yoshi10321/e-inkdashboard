@@ -41,10 +41,16 @@ env:
   #   回転は後段の ImageMagick でまとめて行う。
   DASHBOARD_URL: 'https://e-inkdashboard.netlify.app/#flat'
 
-  # 描画サイズ（横長）。Kindle Paperwhite 3 は 758 x 1024 なので、
-  # 横長で描いてから 90 度回して 758 x 1024 にする。
-  RENDER_WIDTH: '1024'
-  RENDER_HEIGHT: '758'
+  # ブラウザの描画ビューポート（横長）。CSS はこの寸法前提で組んである。
+  VIEWPORT_WIDTH: '1024'
+  VIEWPORT_HEIGHT: '758'
+
+  # 出力する画像のサイズ（回転前・横長）。
+  # Kindle Paperwhite 3（第7世代・300ppi）の画面は 1072 x 1448 なので、
+  # 横長 1448 x 1072 で書き出してから 90 度回して 1072 x 1448 にする。
+  # 1448:1072 は 1024:758 とほぼ同じ縦横比なので、レイアウトは崩れない。
+  OUT_WIDTH: '1448'
+  OUT_HEIGHT: '1072'
 
 jobs:
   render:
@@ -74,8 +80,8 @@ jobs:
           import { chromium } from 'playwright';
 
           const url    = process.env.DASHBOARD_URL;
-          const width  = Number(process.env.RENDER_WIDTH);
-          const height = Number(process.env.RENDER_HEIGHT);
+          const width  = Number(process.env.VIEWPORT_WIDTH);
+          const height = Number(process.env.VIEWPORT_HEIGHT);
 
           const browser = await chromium.launch();
           const page = await browser.newPage({
@@ -122,7 +128,7 @@ jobs:
           "$IM" -version | head -n 1
 
           "$IM" raw.png \
-            -resize ${RENDER_WIDTH}x${RENDER_HEIGHT}! \
+            -resize ${OUT_WIDTH}x${OUT_HEIGHT}! \
             -rotate 90 \
             -colorspace Gray \
             -type Grayscale \
@@ -132,7 +138,7 @@ jobs:
 
           # 中身の確認用に、回転前の横長版も置いておく（PC から見るとき用）
           "$IM" raw.png \
-            -resize ${RENDER_WIDTH}x${RENDER_HEIGHT}! \
+            -resize ${OUT_WIDTH}x${OUT_HEIGHT}! \
             -colorspace Gray -type Grayscale -depth 8 -strip \
             public/preview.png
 
