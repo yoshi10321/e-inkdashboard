@@ -164,13 +164,34 @@ fetch_image() {
 
 # --- バッテリー -----------------------------------------------------
 
-# 残量（%）。フレームワーク停止中でも gasgauge-info なら取れる。
+# 残量（%）を取得する。環境によって使える手段が違うので順に試し、
+# どれが効いたかをログに残す。
 battery_level() {
-    lvl=$(gasgauge-info -c 2>/dev/null | tr -dc '0-9')
-    if [ -z "$lvl" ]; then
-        lvl=$(lipc-get-prop com.lab126.powerd battLevel 2>/dev/null | tr -dc '0-9')
+    # 1) sysfs。フレームワークにも lipc にも依存しないので最も確実。
+    for f in /sys/class/power_supply/*/capacity; do
+        [ -r "$f" ] || continue
+        v=$(cat "$f" 2>/dev/null | tr -dc '0-9')
+        if [ -n "$v" ]; then
+            log "電池残量の取得元: $f"
+            echo "$v"; return
+        fi
+    done
+
+    # 2) gasgauge-info。-s が百分率、-c は機種により mAh を返すことがある。
+    v=$(gasgauge-info -s 2>/dev/null | tr -dc '0-9')
+    if [ -n "$v" ]; then
+        log "電池残量の取得元: gasgauge-info -s"
+        echo "$v"; return
     fi
-    echo "$lvl"
+
+    # 3) lipc（フレームワーク停止中は使えないことがある）
+    v=$(lipc-get-prop com.lab126.powerd battLevel 2>/dev/null | tr -dc '0-9')
+    if [ -n "$v" ]; then
+        log "電池残量の取得元: lipc powerd"
+        echo "$v"; return
+    fi
+
+    echo ""
 }
 
 is_charging() {
@@ -195,21 +216,26 @@ draw_battery() {
 
     lv=$(round_to_5 "$bat")
     [ "$lv" -gt 100 ] 2>/dev/null && lv=100
+    [ "$lv" -lt 0 ] 2>/dev/null && lv=0
 
     bimg="$WORKDIR/bat_${lv}.png"
     if [ ! -f "$bimg" ]; then
-        wget -q --no-check-certificate -O "$bimg.tmp" "$BAT_URL_BASE/${lv}.png" 2>>"$LOG"
+        burl="$BAT_URL_BASE/${lv}.png"
+        log "バッテリーアイコンを取得: $burl"
+        wget -q --no-check-certificate -O "$bimg.tmp" "$burl" 2>>"$LOG"
         if [ -s "$bimg.tmp" ] && head -c 4 "$bimg.tmp" | grep -q "PNG"; then
             mv "$bimg.tmp" "$bimg"
+            log "アイコン取得成功 ($(wc -c < "$bimg") bytes)"
         else
+            log "アイコン取得失敗（サイズ $(wc -c < "$bimg.tmp" 2>/dev/null) bytes）"
             rm -f "$bimg.tmp"
-            log "バッテリーアイコン ${lv}.png を取得できなかった"
             return 1
         fi
     fi
 
     # eips は画像を左上 (0,0) に等倍で描く。小さい画像なのでその部分だけ上書きされる。
     eips -g "$bimg"
+    log "バッテリーアイコンを描画した (${lv}%)"
     return 0
 }
 
