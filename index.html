@@ -57,10 +57,11 @@ html.flat, body.flat { width: auto; height: auto; overflow: visible; }
 .head { width: 100%; border-bottom: 3px solid #000; padding-bottom: 5px; }
 .head td { vertical-align: baseline; padding: 0; }
 .today-date { font-size: 27px; font-weight: bold; letter-spacing: 0.02em; }
-/* 右上 110px x 46px はバッテリー画像を重ねる領域として空けておく
-   （出力 1448x1072 換算で 150x64 ぶん） */
+/* 右上はバッテリー画像を重ねる領域として空けておく。
+   アイコンは出力 1448x1072 換算で 90x40px なので、
+   CSS(1024x758) 換算では約 64x28px。余白を少し足して 80px 確保する。 */
 .head-right { text-align: right; font-size: 16px; color: #000;
-              letter-spacing: 0.08em; padding-right: 138px !important; }
+              letter-spacing: 0.08em; padding-right: 80px !important; }
 .head-right span { margin-left: 18px; }
 
 /* 中段 */

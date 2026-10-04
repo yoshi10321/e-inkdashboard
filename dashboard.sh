@@ -168,6 +168,15 @@ download_png() {
     dest=$2
     if wget -q --no-check-certificate -O "$dest.tmp" "$url" 2>>"$LOG"; then
         if [ -s "$dest.tmp" ] && head -c 4 "$dest.tmp" | grep -q "PNG"; then
+            # eips が読めるのは 8bit グレースケール(色種別0)の PNG だけ。
+            # 4bit などで来ると、描画が失敗して画面が真っ白になる。
+            # PNG の IHDR は 24 バイト目が bit深度、25 バイト目が色種別。
+            ihdr=$(od -An -tu1 -j24 -N2 "$dest.tmp" 2>/dev/null | tr -s ' ')
+            case "$ihdr" in
+                *" 8 0"*|*" 8 4"*) : ;;
+                "") : ;;   # od が無い端末では確認を飛ばす
+                *) log "警告: PNG の形式が eips 向きでない (bit深度/色種別:$ihdr) $url" ;;
+            esac
             mv "$dest.tmp" "$dest"
             return 0
         fi
@@ -212,14 +221,21 @@ show_image() {
     eips -c          # 残像を消す
     sleep 1
 
-    # -f を付けると全画面を一度黒く反転させてから描き直す（フル更新）。
-    # これをしないと部分更新の波形が使われ、灰色が白黒の点々に潰れて
-    # 文字がガビガビに見える。-f を解さないファームなら素のまま描く。
+    # -f を付けると全画面を一度反転させてから描き直す（フル更新）。
+    # これをしないと部分更新の波形が使われ、広い黒がきちんと沈まず、
+    # 絵全体が眠く（ガビガビに）見える。-f を解さないファームもあるので、
+    # 通る書き方を上から順に試して、最初に成功したものを使う。
     if eips -f -g "$IMG" 2>/dev/null; then
-        log "本体画像を描画した（フル更新）"
-    else
-        eips -g "$IMG"
+        log "本体画像を描画した（フル更新 -f -g）"
+    elif eips -g "$IMG" 2>/dev/null && eips -f 2>/dev/null; then
+        log "本体画像を描画した（描画後にフル更新 -f）"
+    elif eips -g "$IMG"; then
         log "本体画像を描画した（通常更新）"
+    else
+        # ここまで来たら画像そのものが読めていない。原因を残す。
+        log "描画に失敗した。eips の使い方:"
+        eips -h >>"$LOG" 2>&1 || eips >>"$LOG" 2>&1
+        return 1
     fi
 
     if [ "$SHOW_BATTERY" = "1" ] && [ -f "$BATIMG" ]; then
@@ -258,6 +274,8 @@ suspend_for() {
 # 電池をどんどん使う。目標時刻まで残っていれば、もう一度サスペンドし直す。
 wait_until() {
     target=$1
+    quick=0          # すぐ目が覚めた回数
+
     while true; do
         remain=$(( target - $(date +%s) ))
         [ "$remain" -le 0 ] && return 0
@@ -266,20 +284,29 @@ wait_until() {
         [ -f "$STOPFILE" ] && return 0
 
         # 残りがごく僅かなら、サスペンドし直すより起きていた方が早い
-        if [ "$remain" -lt 60 ]; then
+        if [ "$remain" -lt 60 ] || [ "$MODE" != "suspend" ]; then
             sleep "$remain"
             return 0
         fi
 
-        if [ "$MODE" = "suspend" ]; then
-            suspend_for "$remain"
-        else
-            sleep "$remain"
-            return 0
-        fi
+        before=$(date +%s)
+        suspend_for "$remain"
+        slept=$(( $(date +%s) - before ))
 
         remain=$(( target - $(date +%s) ))
-        if [ "$remain" -gt 60 ]; then
+        [ "$remain" -le 0 ] && return 0
+
+        # USB をつないでいると、こちらの指定より先に何度も起こされる。
+        # そのたびにログを書くと溢れるので、短時間で起こされた回数だけ数える。
+        if [ "$slept" -lt 120 ]; then
+            quick=$(( quick + 1 ))
+            if [ "$quick" -ge 5 ]; then
+                log "何度もすぐ起こされる（USB 接続中など）。以後は起きたまま待つ"
+                sleep "$remain"
+                return 0
+            fi
+        else
+            quick=0
             log "予定より早く目が覚めた（残り ${remain}秒）。もう一度寝る"
         fi
     done
