@@ -109,11 +109,21 @@ jobs:
           const width  = Number(process.env.VIEWPORT_WIDTH);
           const height = Number(process.env.VIEWPORT_HEIGHT);
 
+          // 最終出力と同じ画素数で描かせる。
+          //
+          // 以前は 2 倍で撮ってから 0.707 倍に縮めていたが、半端な縮小のせいで
+          // 文字のふちに中間調の灰色が大量に生まれ、E-ink 側でそれが点々に
+          // 散って（ディザ）ガビガビに見えていた。
+          // 1024 x 1.4140625 = 1448 ちょうど。ブラウザにこの倍率で描かせれば
+          // 縮小処理そのものが要らなくなり、文字が最初から最終解像度で整う。
+          const scale = Number(process.env.OUT_WIDTH) / width;
+
           const browser = await chromium.launch();
           const page = await browser.newPage({
             viewport: { width, height },
-            deviceScaleFactor: 2,          // 一旦 2 倍で描いて後で縮小（文字が滑らかになる）
+            deviceScaleFactor: scale,
           });
+          console.log('描画倍率:', scale, '→', Math.round(width * scale) + 'x' + Math.round(height * scale));
 
           console.log('開く:', url);
           await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
@@ -152,9 +162,12 @@ jobs:
           node shot.mjs
 
       - name: Kindle 向けの PNG に変換
-        # ・2 倍で撮ったものを出力サイズに合わせる（アンチエイリアスが効いて文字が綺麗になる）
-        # ・時計回りに 90 度回転して 1072 x 1448 の縦長にする
+        # ・撮影時点ですでに出力サイズなので、拡大縮小はしない（1px のずれだけ整える）
+        # ・反時計回りに 90 度回転して 1072 x 1448 の縦長にする
         # ・グレースケール 8bit にする（E-ink に合わせ、ファイルも軽くなる）
+        # ・階調を 16 段に落とす。Paperwhite の画面は 16 階調しか出せないので、
+        #   中途半端な灰色を端末側にディザ（点々）で近似させるより、
+        #   こちらで素直に丸めた方が文字のふちが締まる。
         run: |
           set -e
           mkdir -p public
@@ -163,22 +176,19 @@ jobs:
           IM="$(command -v magick || command -v convert)"
           echo "ImageMagick: $IM"
           "$IM" -version | head -n 1
+          echo "撮影されたサイズ: $("$IM" identify -format '%wx%h' raw.png)"
 
           "$IM" raw.png \
             -resize ${OUT_WIDTH}x${OUT_HEIGHT}! \
-            -rotate -90 \
             -colorspace Gray \
             -type Grayscale \
+            +dither -posterize 16 \
             -depth 8 \
             -strip \
-            public/dash.png
-
-          # 端末の画面の向きを横向きに設定できた場合は、回転なしのこちらを使う。
-          # PC から見た目を確認するときもこちらが読みやすい。
-          "$IM" raw.png \
-            -resize ${OUT_WIDTH}x${OUT_HEIGHT}! \
-            -colorspace Gray -type Grayscale -depth 8 -strip \
             public/dash-land.png
+
+          # 端末は縦向きのままなので、横向きに置いて読めるよう回しておく。
+          "$IM" public/dash-land.png -rotate -90 -strip public/dash.png
 
           # ダッシュボード本体と取得済みデータも公開する
           # （ブラウザから見るときも同じデータが使われる）

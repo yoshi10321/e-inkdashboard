@@ -59,7 +59,7 @@ html.flat, body.flat { width: auto; height: auto; overflow: visible; }
 .today-date { font-size: 27px; font-weight: bold; letter-spacing: 0.02em; }
 /* 右上 110px x 46px はバッテリー画像を重ねる領域として空けておく
    （出力 1448x1072 換算で 150x64 ぶん） */
-.head-right { text-align: right; font-size: 14px; color: #444;
+.head-right { text-align: right; font-size: 16px; color: #000;
               letter-spacing: 0.08em; padding-right: 138px !important; }
 .head-right span { margin-left: 18px; }
 
@@ -84,9 +84,9 @@ html.flat, body.flat { width: auto; height: auto; overflow: visible; }
 }
 .wx-temp .deg { font-size: 52px; }
 .wx-desc { font-size: 38px; font-weight: bold; margin-bottom: 16px; }
-.wx-sub { font-size: 21px; color: #111; white-space: nowrap; }
+.wx-sub { font-size: 21px; color: #000; white-space: nowrap; }
 .wx-sub b { font-size: 28px; }
-.wx-meta { font-size: 16px; color: #444; margin-top: 16px; line-height: 1.8; letter-spacing: 0.03em; }
+.wx-meta { font-size: 18px; color: #000; margin-top: 16px; line-height: 1.8; letter-spacing: 0.03em; }
 
 /* 市況カード */
 .mkt-wrap { width: 100%; height: 100%; border-collapse: separate; border-spacing: 0; }
@@ -100,7 +100,7 @@ html.flat, body.flat { width: auto; height: auto; overflow: visible; }
   vertical-align: top !important;
 }
 .mkt.first { border-bottom-width: 0; }
-.m-label { font-size: 11px; letter-spacing: 0.2em; color: #333; margin-bottom: 3px; }
+.m-label { font-size: 14px; letter-spacing: 0.2em; color: #000; margin-bottom: 3px; }
 .m-value {
   font-size: 46px;
   font-weight: bold;
@@ -108,45 +108,45 @@ html.flat, body.flat { width: auto; height: auto; overflow: visible; }
   font-variant-numeric: tabular-nums;
   display: inline-block;
 }
-.m-change { font-size: 17px; display: inline-block; margin-left: 10px; }
+.m-change { font-size: 19px; display: inline-block; margin-left: 10px; }
 .m-change .up:before   { content: "\25B2 "; }
 .m-change .down:before { content: "\25BC "; }
-.m-change .down { background: #e2e2e2; padding: 0 4px; }
+.m-change .down { font-weight: bold; }
 .m-foot { width: 100%; margin-top: 6px; border-collapse: collapse; }
 .m-foot td { vertical-align: bottom; padding: 0; }
-.m-asof { font-size: 11px; color: #777; white-space: nowrap; }
+.m-asof { font-size: 13px; color: #000; white-space: nowrap; }
 
-.spark { height: 64px; font-size: 0; text-align: right; border-bottom: 1px solid #bbb; }
+.spark { height: 64px; font-size: 0; text-align: right; border-bottom: 1px solid #000; }
 .spark i { display: inline-block; vertical-align: bottom; margin-left: 1px; }
 
 /* 週間予報 */
-.sec-title { font-size: 12px; letter-spacing: 0.22em; border-bottom: 2px solid #000; padding-bottom: 3px; }
+.sec-title { font-size: 15px; letter-spacing: 0.22em; border-bottom: 2px solid #000; padding-bottom: 3px; }
 .week { width: 100%; height: 100%; border-collapse: collapse; table-layout: fixed; }
 .week td {
   text-align: center;
   padding: 4px 3px;
-  border-right: 1px solid #c8c8c8;
+  border-right: 1px solid #888;
   vertical-align: middle;
 }
 .week td.last { border-right: 0; }
-.week td.weekend { background: #efefef; }
+.week td.weekend { background: #e0e0e0; }
 .w-day { font-size: 24px; font-weight: bold; }
-.w-date { font-size: 14px; color: #666; margin-bottom: 8px; letter-spacing: 0.03em; }
+.w-date { font-size: 16px; color: #000; margin-bottom: 8px; letter-spacing: 0.03em; }
 .w-icon-wrap { margin-bottom: 8px; }
-.w-label { font-size: 15px; color: #333; margin-bottom: 6px; }
+.w-label { font-size: 17px; color: #000; margin-bottom: 6px; }
 .w-temp { font-size: 29px; font-variant-numeric: tabular-nums; }
-.w-temp .min { color: #666; font-size: 23px; }
-.w-pop { font-size: 14px; color: #333; margin-top: 5px; }
+.w-temp .min { color: #000; font-size: 23px; }
+.w-pop { font-size: 16px; color: #000; margin-top: 5px; }
 
 /* 時間別予報（今日のパネル下部） */
 .hourly { width: 100%; border-collapse: collapse; margin-top: 18px;
-          border-top: 1px solid #c8c8c8; table-layout: fixed; }
+          border-top: 1px solid #888; table-layout: fixed; }
 .hourly td { text-align: center; padding: 10px 2px 2px 2px; vertical-align: top; }
-.h-time { font-size: 14px; color: #555; letter-spacing: 0.04em; margin-bottom: 4px; }
+.h-time { font-size: 16px; color: #000; letter-spacing: 0.04em; margin-bottom: 4px; }
 .h-temp { font-size: 20px; font-variant-numeric: tabular-nums; margin-top: 4px; }
-.h-pop { font-size: 12px; color: #555; }
+.h-pop { font-size: 15px; color: #000; }
 
-.err { font-size: 14px; color: #666; }
+.err { font-size: 14px; color: #000; }
 
 /* ---------------------------------------------------------------
    天気アイコン — div のみで描画
