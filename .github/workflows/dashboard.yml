@@ -54,8 +54,8 @@ env:
 
   # バッテリー表示画像のサイズ（回転前・横長）。
   # ダッシュボード側でこのぶんの余白を右上に空けてある。
-  BAT_WIDTH: '150'
-  BAT_HEIGHT: '64'
+  BAT_WIDTH: '180'
+  BAT_HEIGHT: '72'
 
 jobs:
   render:
@@ -164,13 +164,20 @@ jobs:
           cp index.html public/index.html
 
           # --- バッテリー表示用の小さな画像を 5% 刻みで作る ---
-          # 横書きで作ってから本体と同じ向き（反時計回り90度）に回すので、
+          # Kindle 標準のような電池アイコン（枠＋残量ぶんの塗り＋右の突起）を描く。
+          # 横向きに作ってから本体と同じ向き（反時計回り90度）に回すので、
           # 端末の左上に重ねて描くとダッシュボードの右上に正しい向きで出る。
           mkdir -p public/bat
           for lv in $(seq 0 5 100); do
+            # 枠の内側 16〜142px を残量で塗りつぶす
+            fill_r=$(( 16 + 126 * lv / 100 ))
+            [ "$fill_r" -le 16 ] && fill_r=16
             "$IM" -size ${BAT_WIDTH}x${BAT_HEIGHT} xc:white \
-              -font DejaVu-Sans-Bold -pointsize 42 -fill black -gravity center \
-              -annotate +0+0 "${lv}%" \
+              -stroke black -strokewidth 5 -fill white \
+              -draw "roundrectangle 8,14 150,58 6,6" \
+              -stroke none -fill black \
+              -draw "rectangle 153,28 167,44" \
+              -draw "rectangle 16,22 ${fill_r},50" \
               -rotate -90 \
               -colorspace Gray -type Grayscale -depth 8 -strip \
               "public/bat/${lv}.png"
