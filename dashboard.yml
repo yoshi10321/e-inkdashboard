@@ -1,0 +1,153 @@
+#
+# Kindle ダッシュボード画像の自動生成
+#
+# Netlify に置いてあるダッシュボードのページを 1 時間おきにスクリーンショットし、
+# Kindle 向けの PNG に変換して GitHub Pages に公開する。
+#
+# Kindle 側はこの URL の画像を取りに行くだけでよくなる:
+#   https://<ユーザー名>.github.io/<リポジトリ名>/dash.png
+#
+# ---------------------------------------------------------------------------
+# 事前にやること
+#   1. このファイルをリポジトリの .github/workflows/dashboard.yml として置く
+#   2. 下の DASHBOARD_URL を自分の Netlify の URL に書き換える
+#   3. GitHub のリポジトリ設定 → Pages → Source を「GitHub Actions」にする
+#   4. Actions タブから一度手動実行（Run workflow）して動作確認
+# ---------------------------------------------------------------------------
+
+name: Render Kindle Dashboard
+
+on:
+  schedule:
+    # 毎時 5 分に実行（UTC 基準だが毎時なので時差は無関係）
+    # 間隔を変えたいときはここを書き換える。例: 3 時間おき → '5 */3 * * *'
+    - cron: '5 * * * *'
+  workflow_dispatch:        # 手動実行も可能にする
+
+# GitHub Pages への公開に必要な権限
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 実行が重なった場合は新しい方を優先し、古い方は止める
+concurrency:
+  group: kindle-dashboard
+  cancel-in-progress: true
+
+env:
+  # ★ ここを自分の Netlify の URL に書き換える（末尾の #flat は必須）
+  #   #flat を付けると CSS の 90 度回転が無効になり、横長のまま描画される。
+  #   回転は後段の ImageMagick でまとめて行う。
+  DASHBOARD_URL: 'https://e-inkdashboard.netlify.app/#flat'
+
+  # 描画サイズ（横長）。Kindle Paperwhite 3 は 758 x 1024 なので、
+  # 横長で描いてから 90 度回して 758 x 1024 にする。
+  RENDER_WIDTH: '1024'
+  RENDER_HEIGHT: '758'
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 日本語フォントを入れる
+        # ランナーには日本語フォントが入っていないため、
+        # これが無いと本文がすべて豆腐（□）になる。
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq fonts-noto-cjk fonts-noto-cjk-extra
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Playwright と Chromium を入れる
+        run: |
+          npm init -y >/dev/null 2>&1
+          npm install --no-fund --no-audit playwright
+          npx playwright install --with-deps chromium
+
+      - name: ページをスクリーンショット
+        run: |
+          cat > shot.mjs <<'EOF'
+          import { chromium } from 'playwright';
+
+          const url    = process.env.DASHBOARD_URL;
+          const width  = Number(process.env.RENDER_WIDTH);
+          const height = Number(process.env.RENDER_HEIGHT);
+
+          const browser = await chromium.launch();
+          const page = await browser.newPage({
+            viewport: { width, height },
+            deviceScaleFactor: 2,          // 一旦 2 倍で描いて後で縮小（文字が滑らかになる）
+          });
+
+          console.log('開く:', url);
+          await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
+
+          // ページ内の天気・為替・日経の取得が終わるのを待つ。
+          // 「--」のままの枠が無くなるか、最長 30 秒で打ち切る。
+          await page.waitForFunction(() => {
+            const ids = ['wxTemp', 'fxValue', 'nkValue'];
+            const pending = ids.filter(function (id) {
+              const node = document.getElementById(id);
+              return !node || node.textContent.indexOf('--') !== -1;
+            });
+            return pending.length === 0;
+          }, null, { timeout: 30000 }).catch(function () {
+            console.log('一部のデータが取得できませんでした。そのまま撮影します。');
+          });
+
+          // 描画の落ち着きを待つ
+          await page.waitForTimeout(1500);
+
+          await page.screenshot({ path: 'raw.png' });
+          await browser.close();
+          console.log('撮影完了');
+          EOF
+          node shot.mjs
+
+      - name: Kindle 向けの PNG に変換
+        # ・2 倍で撮ったものを等倍に縮小（アンチエイリアスが効いて文字が綺麗になる）
+        # ・時計回りに 90 度回転して 758 x 1024 の縦長にする
+        # ・16 階調グレースケールにする（E-ink の表現力に合わせ、ファイルも軽くなる）
+        run: |
+          mkdir -p public
+          convert raw.png \
+            -resize ${RENDER_WIDTH}x${RENDER_HEIGHT}! \
+            -rotate 90 \
+            -colorspace Gray \
+            -depth 8 \
+            -colors 16 \
+            -strip \
+            PNG8:public/dash.png
+
+          # 中身の確認用に、回転前の横長版も置いておく（PC から見るとき用）
+          convert raw.png \
+            -resize ${RENDER_WIDTH}x${RENDER_HEIGHT}! \
+            -colorspace Gray -depth 8 -colors 16 -strip \
+            PNG8:public/preview.png
+
+          echo "--- 生成結果 ---"
+          identify public/dash.png public/preview.png
+          ls -lh public/
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    needs: render
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
