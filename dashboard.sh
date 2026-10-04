@@ -275,6 +275,7 @@ show_image() {
     if [ "$FLASH_BEFORE_DRAW" = "1" ] && [ -f "$BLACKIMG" ]; then
         eips -g "$BLACKIMG"
         sleep 1
+        log "黒→白で残像を消した"
     fi
     eips -c          # 白に戻す
     sleep 1
