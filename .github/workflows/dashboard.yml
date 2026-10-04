@@ -219,6 +219,13 @@ jobs:
             esac
           done
 
+          # 残像消し用の真っ黒な画像。
+          # E-ink は一度黒く塗ってから白に戻すと前の絵が完全に抜ける。
+          # eips -f が効かない端末でも、これを挟めば同じことができる。
+          "$IM" -size ${OUT_HEIGHT}x${OUT_WIDTH} xc:black \
+            -colorspace Gray -type Grayscale -depth 8 \
+            -strip $PNGOPT public/black.png
+
           # ダッシュボード本体と取得済みデータも公開する
           # （ブラウザから見るときも同じデータが使われる）
           cp index.html public/index.html

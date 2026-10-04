@@ -40,6 +40,12 @@
 IMG_URL="https://yoshi10321.github.io/e-inkdashboard/dash.png"
 BAT_URL_BASE="https://yoshi10321.github.io/e-inkdashboard/bat"
 DATA_URL="https://yoshi10321.github.io/e-inkdashboard/data.json"
+BLACK_URL="https://yoshi10321.github.io/e-inkdashboard/black.png"
+
+# 描画前に画面を一度黒く塗ってから白に戻すか（残像消し）
+#   1 : 消す。更新のたびに一瞬黒い画面が入るが、前の絵が完全に抜ける。
+#   0 : 消さない。更新は静かだが、濃い図形の消え残りが溜まることがある。
+FLASH_BEFORE_DRAW=1
 
 # 更新間隔（秒）。3600 = 1時間
 INTERVAL=3600
@@ -68,6 +74,7 @@ UPDATE_AT_MIDNIGHT=1
 WORKDIR=/mnt/us
 IMG="$WORKDIR/dashboard.png"
 BATIMG="$WORKDIR/dashboard_bat.png"
+BLACKIMG="$WORKDIR/dashboard_black.png"
 LOG="$WORKDIR/dashboard.log"
 STOPFILE="$WORKDIR/documents/dashboard.stop"
 
@@ -243,6 +250,13 @@ fetch_all() {
     if download_png "$BAT_URL_BASE/${lv}.png" "$BATIMG"; then
         log "アイコン 取得成功 ($(wc -c < "$BATIMG") bytes)"
     fi
+
+    # 残像消し用の黒画像。中身は変わらないので一度取れば十分。
+    if [ "$FLASH_BEFORE_DRAW" = "1" ] && [ ! -f "$BLACKIMG" ]; then
+        if download_png "$BLACK_URL" "$BLACKIMG"; then
+            log "残像消し用の黒画像 取得成功"
+        fi
+    fi
 }
 
 # --- 画面描画（UI を止めた後に呼ぶ） ---------------------------------
@@ -252,7 +266,17 @@ show_image() {
         log "表示する画像がない（描画をスキップ）"
         return 1
     fi
-    eips -c          # 残像を消す
+    # 画面を一度黒く塗ってから白に戻す。
+    #
+    # E-ink の部分更新は前の絵を押し出す力が弱く、濃い図形が灰色の影として
+    # 残る。Kindle 自身の UI を 1周ごとに起動し直している都合で、その間に
+    # 描かれたものが残像になりやすい。
+    # 黒 → 白 を一度通すと、どの画素も必ず両端まで振られるので影が消える。
+    if [ "$FLASH_BEFORE_DRAW" = "1" ] && [ -f "$BLACKIMG" ]; then
+        eips -g "$BLACKIMG"
+        sleep 1
+    fi
+    eips -c          # 白に戻す
     sleep 1
 
     # -f を付けると全画面を一度反転させてから描き直す（フル更新）。
