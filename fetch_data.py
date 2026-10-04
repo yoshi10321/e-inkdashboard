@@ -26,8 +26,8 @@ TZ = "Asia/Tokyo"
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
 
 
-def get(url, tries=3, timeout=20, headers=None):
-    """単純な GET。失敗したら少し待って再試行する。"""
+def get_bytes(url, tries=3, timeout=20, headers=None):
+    """単純な GET（バイト列のまま返す）。失敗したら少し待って再試行する。"""
     h = {
         "User-Agent": UA,
         "Accept": "*/*",
@@ -46,7 +46,7 @@ def get(url, tries=3, timeout=20, headers=None):
                 # それでも gzip で返ってくる相手がいる
                 if raw[:2] == b"\x1f\x8b":
                     raw = gzip.GzipFile(fileobj=io.BytesIO(raw)).read()
-                return raw.decode("utf-8", "replace")
+                return raw
         except Exception as e:          # noqa: BLE001 - 失敗理由は問わず再試行する
             last = e
             print(f"  試行 {i + 1}/{tries} 失敗: {e}", file=sys.stderr)
@@ -54,6 +54,11 @@ def get(url, tries=3, timeout=20, headers=None):
                 import time
                 time.sleep(2 * (i + 1))
     raise RuntimeError(f"取得できませんでした: {url} ({last})")
+
+
+def get(url, tries=3, timeout=20, headers=None):
+    """GET して UTF-8 の文字列として返す。"""
+    return get_bytes(url, tries, timeout, headers).decode("utf-8", "replace")
 
 
 def parse_date_value_csv(text, what):
@@ -121,14 +126,57 @@ def fetch_fx():
 # データセンターの IP からの取得を断ることがある。
 # そのため取得元を複数用意して、取れたところを使う。
 
-def _nikkei_from_fred():
-    """セントルイス連銀 (FRED) の NIKKEI225。API キー不要で、
-    クラウドからの取得も断られにくい。前営業日までの終値。"""
+def _nikkei_from_nikkei_inc():
+    """日本経済新聞社が公開している日経平均の日次 CSV。
+    文字コードは Shift-JIS で、末尾に注記の行が入る。"""
+    url = ("https://indexes.nikkei.co.jp/nkave/historical/"
+           "nikkei_stock_average_daily_jp.csv")
+    text = get_bytes(url, timeout=30).decode("cp932", "replace")
+    lines = [l for l in text.replace("\r", "").split("\n") if l.strip()]
+    closes, last_date = [], ""
+    for line in lines[1:]:
+        cols = [c.strip().strip('"') for c in line.split(",")]
+        if len(cols) < 2:
+            continue
+        try:
+            closes.append(float(cols[1].replace(",", "")))
+            last_date = cols[0].replace("/", "-")
+        except ValueError:
+            continue        # 末尾の注記行など
+    if not closes:
+        raise RuntimeError(f"日経社の CSV を読めなかった（先頭: {text[:120]!r}）")
+    return closes[-60:], last_date
+
+
+def _nikkei_from_fred_csv():
+    """セントルイス連銀 (FRED) の NIKKEI225。API キー不要。
+    グラフ用の CSV は生成に時間がかかるので待ち時間を長めに取る。"""
     to = datetime.now(JST)
     frm = to - timedelta(days=90)
     url = ("https://fred.stlouisfed.org/graph/fredgraph.csv?id=NIKKEI225"
            f"&cosd={frm.strftime('%Y-%m-%d')}&coed={to.strftime('%Y-%m-%d')}")
-    closes, last_date = parse_date_value_csv(get(url), "FRED")
+    closes, last_date = parse_date_value_csv(get(url, timeout=60), "FRED(csv)")
+    return closes[-60:], last_date
+
+
+def _nikkei_from_fred_txt():
+    """FRED が置いている素のテキスト。全期間ぶんあるが静的ファイルなので速い。
+        DATE                 VALUE
+        1949-05-16           176.21
+    という空白区切りで、欠損は "." 。"""
+    text = get("https://fred.stlouisfed.org/data/NIKKEI225.txt", timeout=60)
+    closes, last_date = [], ""
+    for line in text.replace("\r", "").split("\n"):
+        parts = line.split()
+        if len(parts) != 2 or "-" not in parts[0]:
+            continue        # 冒頭の説明文や見出し
+        try:
+            closes.append(float(parts[1]))
+            last_date = parts[0]
+        except ValueError:
+            continue        # "."
+    if not closes:
+        raise RuntimeError(f"FRED のテキストを読めなかった（先頭: {text[:120]!r}）")
     return closes[-60:], last_date
 
 
@@ -184,11 +232,15 @@ def _nikkei_from_yahoo(host="query1"):
     return closes, label
 
 
+# 上から順に試す。
+# Stooq と Yahoo はデータセンターの IP だと断られる（bot 判定・429）ので後ろに置く。
 NIKKEI_SOURCES = (
-    ("FRED", _nikkei_from_fred),
-    ("Stooq", _nikkei_from_stooq),
+    ("日経社CSV", _nikkei_from_nikkei_inc),
+    ("FRED(txt)", _nikkei_from_fred_txt),
+    ("FRED(csv)", _nikkei_from_fred_csv),
     ("Yahoo(query1)", lambda: _nikkei_from_yahoo("query1")),
     ("Yahoo(query2)", lambda: _nikkei_from_yahoo("query2")),
+    ("Stooq", _nikkei_from_stooq),
 )
 
 
