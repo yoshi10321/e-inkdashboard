@@ -2,8 +2,20 @@
 #
 # Kindle ダッシュボード表示スクリプト
 # ------------------------------------------------------------------
-# GitHub Pages に置いた dash.png を定期的に取得し、画面に描画する。
-# 更新の合間は端末をサスペンドさせて電池を節約する。
+# GitHub Pages に置いた画像を定期的に取得し、画面に描画する。
+#
+# 【重要な設計】
+#   UI フレームワーク（lab126_gui）を止めるとステータスバーは消えるが、
+#   同時に Wi-Fi 制御（lipc の com.lab126.cmd）も使えなくなる。
+#   そのため 1 周ごとに次の順番で動かす:
+#
+#     1. UI を動かした状態でネットワーク作業（画像とアイコンを取得）
+#     2. Wi-Fi を切る
+#     3. UI を止める（ステータスバーが描かれなくなる）
+#     4. 画面に描画する
+#     5. 待機（サスペンド）
+#
+#   取得をすべて先に済ませてから UI を止めるのがポイント。
 #
 # 【置き場所】
 #   Kindle を USB 接続し、このファイルを documents フォルダに置く。
@@ -13,11 +25,11 @@
 #   dash.png は反時計回りに 90 度回してある。倒して置くと正しく読める。
 #
 # 【止め方】
-#   ・/mnt/us/documents/dashboard.stop という空ファイルを作る（次の更新時に終了）
+#   ・/mnt/us/documents/dashboard.stop という空ファイルを作る
 #   ・または電源ボタン長押し → 再起動
 #
-# 【UI が戻らなくなったら】
-#   UI を止めているだけなので、電源ボタン長押しで再起動すれば元に戻る。
+# 【画面が真っ白で反応しなくなったら】
+#   UI を止めているだけなので、電源ボタンを 20〜40 秒長押しすれば再起動して戻る。
 #
 # 【ログ】
 #   /mnt/us/dashboard.log に記録される。USB 接続すれば PC から読める。
@@ -25,8 +37,8 @@
 
 # ===== 設定 =========================================================
 
-# 表示する画像の URL
 IMG_URL="https://yoshi10321.github.io/e-inkdashboard/dash.png"
+BAT_URL_BASE="https://yoshi10321.github.io/e-inkdashboard/bat"
 
 # 更新間隔（秒）。3600 = 1時間
 INTERVAL=3600
@@ -34,22 +46,21 @@ INTERVAL=3600
 # 動作モード
 #   awake   : サスペンドしない。動作確認用。電池はどんどん減る。
 #   suspend : 更新の合間はサスペンドする。常用はこちら。
-MODE="awake"
+MODE="suspend"
 
-# Kindle の UI（ホーム画面・ステータスバー）を止めるか
-#   1 : 止める。時計や電池アイコンが一切描かれなくなり、省電力にもなる。
-#       止めている間は本を読んだり設定を開いたりはできない（再起動で戻る）。
+# Kindle の UI（ホーム画面・ステータスバー）を描画前に止めるか
+#   1 : 止める。時計やステータスバーが描かれなくなる。
 #   0 : 止めない。画面の端に Kindle 標準のステータスバーが残る。
 STOP_FRAMEWORK=1
 
 # バッテリー残量のアイコンを重ねて表示するか
 SHOW_BATTERY=1
-BAT_URL_BASE="https://yoshi10321.github.io/e-inkdashboard/bat"
 
 # ====================================================================
 
 WORKDIR=/mnt/us
 IMG="$WORKDIR/dashboard.png"
+BATIMG="$WORKDIR/dashboard_bat.png"
 LOG="$WORKDIR/dashboard.log"
 STOPFILE="$WORKDIR/documents/dashboard.stop"
 
@@ -62,29 +73,28 @@ if [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 100000 ]; then
     tail -n 200 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
 fi
 
-log "===== 起動 (mode=$MODE interval=${INTERVAL}s framework停止=$STOP_FRAMEWORK) ====="
+log "===== 起動 (mode=$MODE interval=${INTERVAL}s UI停止=$STOP_FRAMEWORK) ====="
 
 # スクリプトの標準出力・標準エラーはそのまま画面に描かれてしまい、
-# eips が出す内部メッセージがダッシュボードの上に重なる。すべて捨てる。
+# eips の内部メッセージがダッシュボードの上に重なる。すべて捨てる。
 # （log() は直接ファイルへ書くので、この後もログは残る）
 exec >/dev/null 2>&1
 
-# --- UI フレームワークの停止と再開 ----------------------------------
-# ファームウェアによって init スクリプト方式と upstart 方式があるので
-# 両方試す。止めると時計やステータスバーが一切描かれなくなる。
+# --- UI フレームワーク ----------------------------------------------
+# ファームウェアによって init スクリプト方式と upstart 方式があるので両方試す。
 
 FRAMEWORK_STOPPED=0
 
 stop_framework() {
     [ "$STOP_FRAMEWORK" = "1" ] || return 0
+    [ "$FRAMEWORK_STOPPED" = "1" ] && return 0
     if [ -x /etc/init.d/framework ]; then
         /etc/init.d/framework stop
     else
-        stop lab126_gui   2>/dev/null || initctl stop lab126_gui 2>/dev/null
-        stop framework    2>/dev/null || initctl stop framework  2>/dev/null
+        stop lab126_gui 2>/dev/null || initctl stop lab126_gui 2>/dev/null
     fi
     FRAMEWORK_STOPPED=1
-    log "UI フレームワークを停止した"
+    log "UI を停止した"
     sleep 3
 }
 
@@ -93,109 +103,55 @@ start_framework() {
     if [ -x /etc/init.d/framework ]; then
         /etc/init.d/framework start
     else
-        start lab126_gui  2>/dev/null || initctl start lab126_gui 2>/dev/null
-        start framework   2>/dev/null || initctl start framework  2>/dev/null
+        start lab126_gui 2>/dev/null || initctl start lab126_gui 2>/dev/null
     fi
     FRAMEWORK_STOPPED=0
-    log "UI フレームワークを再開した"
+    log "UI を再開した（ネットワーク作業のため）"
+    # 起動しきるまで待つ。短すぎると lipc がまだ応答しない。
+    sleep 15
 }
 
-# --- Wi-Fi 制御 -----------------------------------------------------
-# フレームワークを止めると lipc の com.lab126.cmd が使えなくなるため、
-# その場合は wlan0 を直接操作する。
+# --- Wi-Fi ----------------------------------------------------------
+# UI が動いている間にだけ呼ぶこと（lipc の com.lab126.cmd が必要）
 
 wifi_on() {
-    if [ "$FRAMEWORK_STOPPED" = "1" ]; then
-        ifconfig wlan0 up 2>/dev/null
-        wpa_cli -i wlan0 reassociate 2>/dev/null
-    else
-        lipc-set-prop com.lab126.cmd wirelessEnable 1 2>/dev/null
-    fi
+    lipc-set-prop com.lab126.cmd wirelessEnable 1 2>/dev/null
 }
 
 wifi_off() {
-    # サスペンド中は無線も落ちるので、フレームワーク停止時は何もしない
-    [ "$FRAMEWORK_STOPPED" = "1" ] && return 0
     lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
+    log "Wi-Fi を切った"
 }
 
-# 接続が確立するまで最大 60 秒待つ
 wait_online() {
     i=0
     while [ $i -lt 30 ]; do
-        if [ "$FRAMEWORK_STOPPED" = "1" ]; then
-            # lipc が使えないので、実際に通信できるかどうかで判断する
-            if wget -q --no-check-certificate --spider -T 5 "$IMG_URL" 2>/dev/null; then
-                log "ネットワーク疎通 OK (${i}回目の確認)"
-                return 0
-            fi
-        else
-            state=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)
-            if [ "$state" = "CONNECTED" ]; then
-                log "Wi-Fi 接続 OK (${i}回目の確認)"
-                return 0
-            fi
+        state=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)
+        if [ "$state" = "CONNECTED" ]; then
+            log "Wi-Fi 接続 OK (${i}回目の確認)"
+            return 0
         fi
         sleep 2
         i=$((i + 1))
     done
-    log "ネットワーク接続タイムアウト"
+    log "Wi-Fi 接続タイムアウト (最後の状態: $state)"
     return 1
 }
 
-# --- 画像の取得 -----------------------------------------------------
+# --- バッテリー残量 --------------------------------------------------
 
-fetch_image() {
-    url="${IMG_URL}?t=$(date +%s)"   # キャッシュ回避
-    if wget -q --no-check-certificate -O "$IMG.tmp" "$url" 2>>"$LOG"; then
-        # エラーページを掴んでいないか簡易チェック
-        if [ -s "$IMG.tmp" ] && head -c 4 "$IMG.tmp" | grep -q "PNG"; then
-            mv "$IMG.tmp" "$IMG"
-            log "取得成功 ($(wc -c < "$IMG") bytes)"
-            return 0
-        fi
-        log "取得したファイルが PNG ではない"
-    else
-        log "wget 失敗"
-    fi
-    rm -f "$IMG.tmp"
-    return 1
-}
-
-# --- バッテリー -----------------------------------------------------
-
-# 残量（%）を取得する。環境によって使える手段が違うので順に試し、
-# どれが効いたかをログに残す。
 battery_level() {
-    # 1) sysfs。フレームワークにも lipc にも依存しないので最も確実。
+    # sysfs が最も確実（UI にも lipc にも依存しない）
     for f in /sys/class/power_supply/*/capacity; do
         [ -r "$f" ] || continue
         v=$(cat "$f" 2>/dev/null | tr -dc '0-9')
-        if [ -n "$v" ]; then
-            log "電池残量の取得元: $f"
-            echo "$v"; return
-        fi
+        [ -n "$v" ] && { echo "$v"; return; }
     done
-
-    # 2) gasgauge-info。-s が百分率、-c は機種により mAh を返すことがある。
     v=$(gasgauge-info -s 2>/dev/null | tr -dc '0-9')
-    if [ -n "$v" ]; then
-        log "電池残量の取得元: gasgauge-info -s"
-        echo "$v"; return
-    fi
-
-    # 3) lipc（フレームワーク停止中は使えないことがある）
+    [ -n "$v" ] && { echo "$v"; return; }
     v=$(lipc-get-prop com.lab126.powerd battLevel 2>/dev/null | tr -dc '0-9')
-    if [ -n "$v" ]; then
-        log "電池残量の取得元: lipc powerd"
-        echo "$v"; return
-    fi
-
+    [ -n "$v" ] && { echo "$v"; return; }
     echo ""
-}
-
-is_charging() {
-    [ "$(lipc-get-prop com.lab126.powerd isCharging 2>/dev/null)" = "1" ]
 }
 
 # 用意してあるアイコンに合わせて 5% 刻みに丸める
@@ -204,52 +160,66 @@ round_to_5() {
     echo $(( ($1 + 2) / 5 * 5 ))
 }
 
-# バッテリーアイコンを端末の左上に重ねて描く。
-# dash.png は反時計回りに回してあるので、左上＝横向き設置時の画面上部にあたる。
-draw_battery() {
+# --- ダウンロード（Wi-Fi がある間に済ませる） ------------------------
+
+# 共通のダウンロード処理。PNG として妥当かどうかも確認する。
+download_png() {
+    url=$1
+    dest=$2
+    if wget -q --no-check-certificate -O "$dest.tmp" "$url" 2>>"$LOG"; then
+        if [ -s "$dest.tmp" ] && head -c 4 "$dest.tmp" | grep -q "PNG"; then
+            mv "$dest.tmp" "$dest"
+            return 0
+        fi
+        log "取得したファイルが PNG ではない: $url"
+    else
+        log "wget 失敗: $url"
+    fi
+    rm -f "$dest.tmp"
+    return 1
+}
+
+fetch_all() {
+    # 本体
+    if download_png "${IMG_URL}?t=$(date +%s)" "$IMG"; then
+        log "本体画像 取得成功 ($(wc -c < "$IMG") bytes)"
+    fi
+
+    # バッテリーアイコン
     [ "$SHOW_BATTERY" = "1" ] || return 0
-
     bat=$(battery_level)
-    [ -n "$bat" ] || { log "電池残量を取得できず"; return 1; }
-
-    if is_charging; then log "電池 ${bat}%（充電中）"; else log "電池 ${bat}%"; fi
-
+    if [ -z "$bat" ]; then
+        log "電池残量を取得できず"
+        return 0
+    fi
     lv=$(round_to_5 "$bat")
     [ "$lv" -gt 100 ] 2>/dev/null && lv=100
     [ "$lv" -lt 0 ] 2>/dev/null && lv=0
+    log "電池 ${bat}% → アイコン ${lv}%"
 
-    bimg="$WORKDIR/bat_${lv}.png"
-    if [ ! -f "$bimg" ]; then
-        burl="$BAT_URL_BASE/${lv}.png"
-        log "バッテリーアイコンを取得: $burl"
-        wget -q --no-check-certificate -O "$bimg.tmp" "$burl" 2>>"$LOG"
-        if [ -s "$bimg.tmp" ] && head -c 4 "$bimg.tmp" | grep -q "PNG"; then
-            mv "$bimg.tmp" "$bimg"
-            log "アイコン取得成功 ($(wc -c < "$bimg") bytes)"
-        else
-            log "アイコン取得失敗（サイズ $(wc -c < "$bimg.tmp" 2>/dev/null) bytes）"
-            rm -f "$bimg.tmp"
-            return 1
-        fi
+    if download_png "$BAT_URL_BASE/${lv}.png" "$BATIMG"; then
+        log "アイコン 取得成功 ($(wc -c < "$BATIMG") bytes)"
     fi
-
-    # eips は画像を左上 (0,0) に等倍で描く。小さい画像なのでその部分だけ上書きされる。
-    eips -g "$bimg"
-    log "バッテリーアイコンを描画した (${lv}%)"
-    return 0
 }
 
-# --- 画面描画 -------------------------------------------------------
+# --- 画面描画（UI を止めた後に呼ぶ） ---------------------------------
 
 show_image() {
-    [ -f "$IMG" ] || { log "表示する画像がない"; return 1; }
-
+    if [ ! -f "$IMG" ]; then
+        log "表示する画像がない（描画をスキップ）"
+        return 1
+    fi
     eips -c          # 残像を消す
     sleep 1
     eips -g "$IMG"
-    log "描画完了"
+    log "本体画像を描画した"
 
-    draw_battery
+    if [ "$SHOW_BATTERY" = "1" ] && [ -f "$BATIMG" ]; then
+        # eips は画像を左上 (0,0) に等倍で描く。
+        # dash.png は反時計回りに回してあるので、左上＝横向き設置時の画面上部。
+        eips -g "$BATIMG"
+        log "バッテリーアイコンを描画した"
+    fi
     return 0
 }
 
@@ -257,8 +227,6 @@ show_image() {
 
 suspend_for() {
     secs=$1
-    # RTC の wakealarm に起床時刻をセットしてからサスペンドする。
-    # 機種によって rtc1 だったり rtc0 だったりするので両方試す。
     for rtc in /sys/class/rtc/rtc1/wakealarm /sys/class/rtc/rtc0/wakealarm; do
         [ -w "$rtc" ] || continue
         echo 0 > "$rtc" 2>/dev/null
@@ -277,23 +245,12 @@ suspend_for() {
 
 cleanup() {
     log "===== 終了 ====="
-    lipc-set-prop com.lab126.powerd preventScreenSaver 0 2>/dev/null
     start_framework
     exit 0
 }
 trap cleanup INT TERM
 
 # --- メインループ ---------------------------------------------------
-
-# UI を止める（時計・ステータスバーが描かれなくなる）
-stop_framework
-
-# UI を止めない場合、awake モードではスクリーンセーバーに入られると
-# 画像が消えてしまうので抑止する
-if [ "$MODE" = "awake" ] && [ "$STOP_FRAMEWORK" != "1" ]; then
-    lipc-set-prop com.lab126.powerd preventScreenSaver 1 2>/dev/null
-    log "スクリーンセーバーを抑止した"
-fi
 
 while true; do
     if [ -f "$STOPFILE" ]; then
@@ -302,14 +259,23 @@ while true; do
         cleanup
     fi
 
+    # 1. ネットワーク作業は UI が動いている状態で行う
+    start_framework
     wifi_on
     if wait_online; then
-        fetch_image
+        fetch_all
+    else
+        log "オフラインのため前回の画像を表示する"
     fi
+
+    # 2. Wi-Fi を切る（UI が動いているうちに）
     wifi_off
 
+    # 3. UI を止めてから描画する（ステータスバーに上書きされないように）
+    stop_framework
     show_image
 
+    # 4. 待機
     if [ "$MODE" = "suspend" ]; then
         suspend_for "$INTERVAL"
     else
