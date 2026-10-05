@@ -229,7 +229,28 @@ wait_for_todays_image() {
     return 1
 }
 
+# 公開されている画像がいつ作られたものか記録する。
+#
+# 画像を作っているのは GitHub Actions だが、GitHub のスケジュール実行は
+# ベストエフォートで、間引かれると何時間も古いままになる。
+# 端末側からは見分けがつかないので、ログに残して気づけるようにする。
+log_image_age() {
+    gen=$(wget -q --no-check-certificate -O - "${DATA_URL}?t=$(date +%s)" 2>/dev/null |
+          sed -n 's/.*"generated":"\([^"]*\)".*/\1/p')
+    if [ -z "$gen" ]; then
+        log "画像の生成時刻を取得できなかった"
+        return
+    fi
+    today=$(date '+%Y-%m-%d')
+    case "$gen" in
+        "$today"*) log "画像の生成時刻 $gen（本日ぶん）" ;;
+        *)         log "警告: 画像が古い。生成時刻 $gen / 本日は $today" ;;
+    esac
+}
+
 fetch_all() {
+    log_image_age
+
     # 本体
     if download_png "${IMG_URL}?t=$(date +%s)" "$IMG"; then
         log "本体画像 取得成功 ($(wc -c < "$IMG") bytes)"
