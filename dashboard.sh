@@ -69,6 +69,20 @@ SHOW_BATTERY=1
 #   0 : INTERVAL の間隔だけで動く。
 UPDATE_AT_MIDNIGHT=1
 
+# 夜間は更新を止める（電池の節約）
+#
+# この時間帯は通信も描画もせず、寝たまま過ごす。
+# E-ink なので電源を使わなくても前の表示は残る。
+# 1 時間あたり 30 秒ほど起きているぶんが、その回数だけ減る。
+#
+# 両方 0 なら無効。0〜23 の整数で指定する。
+# 例: QUIET_START=1 / QUIET_END=6 なら 1時台〜5時台は動かない。
+#
+# 夜間の指定は 0時の更新より優先される。日付を 0時に切り替えたいなら
+# 0時台を含めないこと（23 や 0 から始めると、朝まで前日のままになる）。
+QUIET_START=0
+QUIET_END=0
+
 # ====================================================================
 
 WORKDIR=/mnt/us
@@ -441,6 +455,33 @@ while true; do
     SECS_TODAY=$(( $(date '+%H' | sed 's/^0*//;s/^$/0/') * 3600 \
                  + $(date '+%M' | sed 's/^0*//;s/^$/0/') * 60 \
                  + $(date '+%S' | sed 's/^0*//;s/^$/0/') ))
+
+    # 夜間の時間帯なら、何もせずに明けるまで寝る。
+    # UI を起こさないので画面はそのまま残る（描き直す必要がない）。
+    if [ "$QUIET_START" != "$QUIET_END" ]; then
+        hour=$(date '+%H' | sed 's/^0*//;s/^$/0/')
+        quiet=0
+        if [ "$QUIET_START" -lt "$QUIET_END" ]; then
+            # 例: 1〜6（日をまたがない）
+            [ "$hour" -ge "$QUIET_START" ] && [ "$hour" -lt "$QUIET_END" ] && quiet=1
+        else
+            # 例: 23〜6（日をまたぐ）
+            if [ "$hour" -ge "$QUIET_START" ] || [ "$hour" -lt "$QUIET_END" ]; then
+                quiet=1
+            fi
+        fi
+        if [ "$quiet" = "1" ]; then
+            end_secs=$(( QUIET_END * 3600 ))
+            if [ "$SECS_TODAY" -lt "$end_secs" ]; then
+                NEXT=$(( NOW + end_secs - SECS_TODAY ))
+            else
+                NEXT=$(( NOW + 86400 - SECS_TODAY + end_secs ))
+            fi
+            log "夜間のため更新しない。${QUIET_END}時まで寝る（$(( (NEXT - NOW) / 60 ))分）"
+            wait_until "$NEXT"
+            continue
+        fi
+    fi
 
     # 次の 0時が INTERVAL より先に来るなら、そちらを優先する
     if [ "$UPDATE_AT_MIDNIGHT" = "1" ]; then
