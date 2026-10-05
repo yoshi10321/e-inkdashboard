@@ -74,6 +74,31 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq fonts-noto-cjk fonts-noto-cjk-extra imagemagick
 
+          # Noto Sans CJK は JP/SC/TC/KR が同じファミリー名を共有していて、
+          # 英語ロケールの環境では既定で SC（簡体字）の字形が選ばれる。
+          # 名前を指定せずフォールバックした場合も日本語が出るようにしておく。
+          mkdir -p ~/.config/fontconfig
+          cat > ~/.config/fontconfig/fonts.conf <<'FC'
+          <?xml version="1.0"?>
+          <!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+          <fontconfig>
+            <match target="pattern">
+              <test name="family"><string>sans-serif</string></test>
+              <edit name="family" mode="prepend" binding="strong">
+                <string>Noto Sans CJK JP</string>
+              </edit>
+            </match>
+            <match target="pattern">
+              <test name="family"><string>serif</string></test>
+              <edit name="family" mode="prepend" binding="strong">
+                <string>Noto Serif CJK JP</string>
+              </edit>
+            </match>
+          </fontconfig>
+          FC
+          fc-cache -f >/dev/null
+          echo "sans-serif の既定: $(fc-match 'sans-serif:lang=ja')"
+
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -146,6 +171,28 @@ jobs:
           }, null, { timeout: 30000 }).catch(function () {
             console.log('一部のデータが取得できませんでした。そのまま撮影します。');
           });
+
+          // 日本語の字形が本当に日本語のフォントで描かれているか確かめる。
+          // Noto Sans CJK は JP/SC/TC/KR が同名なので、実際に使われた
+          // フォント名を Chrome DevTools Protocol から取って残しておく。
+          try {
+            const cdp = await page.context().newCDPSession(page);
+            await cdp.send('DOM.enable');
+            await cdp.send('CSS.enable');
+            const { root } = await cdp.send('DOM.getDocument');
+            const { nodeId } = await cdp.send('DOM.querySelector',
+              { nodeId: root.nodeId, selector: '.wx-desc' });
+            const { fonts } = await cdp.send('CSS.getPlatformFontsForNode', { nodeId });
+            const used = fonts.map(f => `${f.familyName}(${f.glyphCount})`).join(', ');
+            console.log('日本語に使われたフォント: ' + used);
+            if (/\bSC\b|\bTC\b|\bKR\b|WenQuanYi|Heiti|Song/.test(used)) {
+              console.log('::warning::日本語以外の字形が使われています: ' + used);
+            } else {
+              console.log('::notice::日本語のフォント: ' + used);
+            }
+          } catch (e) {
+            console.log('フォントの確認に失敗（撮影は続行）: ' + e.message);
+          }
 
           await page.waitForTimeout(1500);   // 描画の落ち着きを待つ
           await page.screenshot({ path: 'raw.png' });
