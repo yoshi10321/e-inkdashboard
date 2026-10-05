@@ -125,8 +125,26 @@ start_framework() {
     sleep 15
 }
 
+# --- 不意のサスペンド対策 ------------------------------------------
+#
+# Kindle 本体の電源管理は、こちらの作業中かどうかに関係なく端末を寝かせる。
+# 実際 2026-10-06 00:00 の周回では、Wi-Fi の接続待ちの最中に寝てしまい、
+# 起床アラームが無かったせいで 5時間15分そのまま戻ってこなかった。
+#
+# 作業中は常に数分後のアラームを仕掛けておく。寝ても必ず戻ってくる。
+# 起きたまま時間切れになった場合は何も起こらないので、掛け捨てでよい。
+WATCHDOG=240
+
+arm_watchdog() {
+    for rtc in /sys/class/rtc/rtc1/wakealarm /sys/class/rtc/rtc0/wakealarm; do
+        [ -w "$rtc" ] || continue
+        echo 0 > "$rtc" 2>/dev/null
+        echo "+$WATCHDOG" > "$rtc" 2>/dev/null && return 0
+    done
+    return 1
+}
+
 # --- Wi-Fi ----------------------------------------------------------
-# UI が動いている間にだけ呼ぶこと（lipc の com.lab126.cmd が必要）
 
 wifi_on() {
     lipc-set-prop com.lab126.cmd wirelessEnable 1 2>/dev/null
@@ -145,6 +163,8 @@ wait_online() {
             log "Wi-Fi 接続 OK (${i}回目の確認)"
             return 0
         fi
+        # 接続待ちの最中に寝かされても戻ってこられるようにする
+        arm_watchdog
         sleep 2
         i=$((i + 1))
     done
@@ -223,6 +243,7 @@ wait_for_todays_image() {
         esac
         i=$((i + 1))
         log "画像がまだ前日ぶん (generated=${gen:-不明})。60秒待つ"
+        arm_watchdog
         sleep 60
     done
     log "今日ぶんの画像を待ちきれなかった。前日ぶんのまま進む"
@@ -431,7 +452,10 @@ while true; do
     fi
 
     # 1. ネットワーク作業は UI が動いている状態で行う
+    #    通信も描画も、途中で寝かされる可能性がある。先にアラームを仕掛ける。
+    arm_watchdog
     start_framework
+    arm_watchdog
     wifi_on
     if wait_online; then
         # 0時を回った直後に起きたときは、画像が今日ぶんになるのを少し待つ
@@ -448,6 +472,7 @@ while true; do
 
     # 3. UI を止めてから描画する（ステータスバーに上書きされないように）
     stop_framework
+    arm_watchdog
     show_image
 
     # 4. 次の更新時刻まで待つ
