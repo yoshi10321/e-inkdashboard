@@ -236,53 +236,6 @@ download_png() {
     return 1
 }
 
-# 公開されている画像が「今日のぶん」になるまで待つ。
-#
-# 0時ちょうどに起きても、画像を作る GitHub Actions 側はまだ前日ぶんを
-# 出していることがある。data.json には作った時刻（日本時間）が入っているので、
-# それが今日の日付になるまで少しだけ待つ。
-#
-# 待っても変わらなければ、前日ぶんの画像でそのまま進む。
-# 次の正時にはどのみち新しくなる。
-wait_for_todays_image() {
-    today=$(date '+%Y-%m-%d')
-    i=0
-    while [ $i -lt 6 ]; do
-        gen=$(wget -q --no-check-certificate -O - "${DATA_URL}?t=$(date +%s)" 2>/dev/null |
-              sed -n 's/.*"generated":"\([^"]*\)".*/\1/p')
-        case "$gen" in
-            "$today"*)
-                [ $i -gt 0 ] && log "今日ぶんの画像ができた（${i}回待った）"
-                return 0 ;;
-        esac
-        i=$((i + 1))
-        log "画像がまだ前日ぶん (generated=${gen:-不明})。60秒待つ"
-        arm_watchdog
-        sleep 60
-    done
-    log "今日ぶんの画像を待ちきれなかった。前日ぶんのまま進む"
-    return 1
-}
-
-# 公開されている画像がいつ作られたものか記録する。
-#
-# 画像を作っているのは GitHub Actions だが、GitHub のスケジュール実行は
-# ベストエフォートで、間引かれると何時間も古いままになる。
-# 端末側からは見分けがつかないので、ログに残して気づけるようにする。
-log_image_age() {
-    gen=$(wget -q --no-check-certificate -O - "${DATA_URL}?t=$(date +%s)" 2>/dev/null |
-          sed -n 's/.*"generated":"\([^"]*\)".*/\1/p')
-    if [ -z "$gen" ]; then
-        log "画像の生成時刻を取得できなかった"
-        return
-    fi
-    today=$(date '+%Y-%m-%d')
-    case "$gen" in
-        "$today"*) log "画像の生成時刻 $gen（本日ぶん）" ;;
-        *)         log "警告: 画像が古い。生成時刻 $gen / 本日は $today" ;;
-    esac
-}
-
 fetch_all() {
     log_image_age
 
@@ -499,10 +452,6 @@ while true; do
     arm_watchdog
     wifi_on
     if wait_online; then
-        # 0時を回った直後に起きたときは、画像が今日ぶんになるのを少し待つ
-        if [ "$UPDATE_AT_MIDNIGHT" = "1" ] && [ "$SECS_TODAY" -lt 600 ]; then
-            wait_for_todays_image
-        fi
         fetch_all
     else
         log "オフラインのため前回の画像を表示する"
@@ -516,6 +465,19 @@ while true; do
     arm_watchdog
     show_image
 
-    # 4. 次の更新時刻まで待つ
+    # 4. 0時台に前日ぶんの画像しか無かった場合は、早めに出直す。
+    #
+    #    画像を作る GitHub 側のスケジュールは当てにならず、0時に間に合わない
+    #    ことがある。かといってここで待つと、その間 Kindle 自身の
+    #    スクリーンセーバーが画面に残ってしまう（UI を起こしているため）。
+    #    先に描いてしまってから、短い間隔で出直すほうがよい。
+    if [ "$UPDATE_AT_MIDNIGHT" = "1" ] \
+       && [ "$SECS_TODAY" -lt 1800 ] \
+       && [ "${IMAGE_IS_TODAY:-1}" = "0" ]; then
+        NEXT=$(( $(date +%s) + 1500 ))
+        log "画像がまだ前日ぶん。25分後に出直す"
+    fi
+
+    # 5. 次の更新時刻まで待つ
     wait_until "$NEXT"
 done
