@@ -69,6 +69,13 @@ SHOW_BATTERY=1
 #   0 : INTERVAL の間隔だけで動く。
 UPDATE_AT_MIDNIGHT=1
 
+# 0時の更新を何秒ずらすか。
+#
+# 画像を作るのに 3 分ほどかかる。0時ちょうどに起きると、まだ前日ぶんしか
+# 公開されておらず、描き直しが二度手間になる。
+# 画像の生成を 0時に始めてもらい、こちらは出来上がった頃に起きる。
+MIDNIGHT_OFFSET=300
+
 # 夜間は更新を止める（電池の節約）
 #
 # この時間帯は通信も描画もせず、寝たまま過ごす。
@@ -438,10 +445,15 @@ while true; do
 
     # 次の 0時が INTERVAL より先に来るなら、そちらを優先する
     if [ "$UPDATE_AT_MIDNIGHT" = "1" ]; then
-        midnight=$(( NOW + 86400 - SECS_TODAY ))
+        if [ "$SECS_TODAY" -lt "$MIDNIGHT_OFFSET" ]; then
+            # 今日のぶんがまだ来ていない（0時を回った直後）
+            midnight=$(( NOW + MIDNIGHT_OFFSET - SECS_TODAY ))
+        else
+            midnight=$(( NOW + 86400 - SECS_TODAY + MIDNIGHT_OFFSET ))
+        fi
         if [ "$midnight" -lt "$NEXT" ]; then
             NEXT=$midnight
-            log "次は 0時に更新する（$(( (NEXT - NOW) / 60 ))分後）"
+            log "次は 0時すぎに更新する（$(( (NEXT - NOW) / 60 ))分後）"
         fi
     fi
 
@@ -474,8 +486,8 @@ while true; do
     if [ "$UPDATE_AT_MIDNIGHT" = "1" ] \
        && [ "$SECS_TODAY" -lt 1800 ] \
        && [ "${IMAGE_IS_TODAY:-1}" = "0" ]; then
-        NEXT=$(( $(date +%s) + 1500 ))
-        log "画像がまだ前日ぶん。25分後に出直す"
+        NEXT=$(( $(date +%s) + 600 ))
+        log "画像がまだ前日ぶん。10分後に出直す"
     fi
 
     # 5. 次の更新時刻まで待つ
