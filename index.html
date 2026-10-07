@@ -575,17 +575,19 @@ function renderWeather(d) {
     /* --- 時間別予報（今から 3 時間おきに 5 コマ） --- */
     renderHourly(d, cur.time);
 
-    var html = "<tr>", i;
-    for (i = 0; i < d.daily.time.length && i < 7; i++) {
+    /* 今日の天気は左の大きいパネルに出ているので、この行は明日から始める。
+       API からは 8 日分もらっているため、明日以降で 7 コマ埋まる。 */
+    var html = "<tr>", i, n = 0;
+    for (i = 1; i < d.daily.time.length && n < 7; i++, n++) {
       var dt = parseISODate(d.daily.time[i]);
       var dow = dt.getDay();
       var cls = "";
       if (dow === 0 || dow === 6) { cls += " weekend"; }
-      if (i === 6) { cls += " last"; }
+      if (n === 6) { cls += " last"; }
       var p = d.daily.precipitation_probability_max[i];
       var wc = d.daily.weather_code[i];
       html += '<td class="' + cls + '">'
-        + '<div class="w-day sans">' + (i === 0 ? "今日" : WDAY[dow]) + "</div>"
+        + '<div class="w-day sans">' + (n === 0 ? "明日" : WDAY[dow]) + "</div>"
         + '<div class="w-date sans">' + (dt.getMonth() + 1) + "/" + dt.getDate() + "</div>"
         + '<div class="w-icon-wrap">' + iconHtml(wc, 62) + "</div>"
         + '<div class="w-label sans">' + weatherLabelShort(wc) + "</div>"

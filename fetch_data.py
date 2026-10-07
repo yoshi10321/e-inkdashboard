@@ -94,7 +94,8 @@ def fetch_weather():
         "&hourly=temperature_2m,weather_code,precipitation_probability"
         "&daily=weather_code,temperature_2m_max,temperature_2m_min,"
         "precipitation_probability_max,sunrise,sunset"
-        f"&timezone={TZ.replace('/', '%2F')}&forecast_days=7"
+        # 週間予報は明日から 7 日ぶん並べるので、今日を含めて 8 日ぶん取る
+        f"&timezone={TZ.replace('/', '%2F')}&forecast_days=8"
     )
     d = json.loads(get(url))
     if "current" not in d or "daily" not in d:
