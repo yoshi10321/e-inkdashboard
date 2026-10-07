@@ -1,0 +1,208 @@
+# e-inkdashboard
+
+脱獄した Kindle Paperwhite 3 を壁掛けの情報ディスプレイにするプロジェクト。
+天気・ドル円・日経平均を1時間おきに表示する。
+
+## 全体の構成
+
+端末では何も生成しない。**画像を1枚作って、端末はそれを貼るだけ**という作りになっている。
+Kindle の内蔵ブラウザは古く、JavaScript も CSS もまともに動かないため。
+
+```
+cron-job.org            毎時 0分・30分 と 23:50 に GitHub の API を叩く
+   ↓ workflow_dispatch
+GitHub Actions          データ取得 → Chromium で描画 → PNG に変換
+   ↓
+GitHub Pages            dash.png / data.json / black.png / bat/*.png を公開
+   ↓ wget（1時間おき）
+Kindle (dashboard.sh)   ダウンロードして eips で画面に描く → サスペンド
+```
+
+公開先は `https://yoshi10321.github.io/e-inkdashboard/`。
+
+## ファイル
+
+| ファイル | 役割 |
+|---|---|
+| `fetch_data.py` | 天気・為替・日経を取得して `data.json` を書く |
+| `index.html` | ダッシュボードの見た目。`data.json` を読んで描画する |
+| `.github/workflows/dashboard.yml` | 上記を回して PNG にし、Pages へ公開する |
+| `dashboard.sh` | Kindle 側の常駐スクリプト |
+
+`dashboard.sh` は Kindle の `/mnt/us/documents/` に置くと本として現れ、
+開くと実行される（脱獄済み端末の scriptlet）。
+
+---
+
+## 踏んではいけない罠
+
+**ここに書いてあるものは全部、実機で痛い目を見て判明した。** 推測ではない。
+
+### Kindle Paperwhite 3（第7世代）
+
+- 画面は **1072 × 1448**。758 × 1024 ではない。間違えると画像が7割の大きさで出る。
+- `eips -g` は画像を**ネイティブ座標の (0,0) にしか描けない**。位置指定はできない前提で設計する。
+  バッテリーアイコンが右上に出せているのは、画像を反時計回りに回しているから
+  ネイティブの (0,0) が横向き設置時の右上に来るため。
+- `eips` が読めるのは **8bit グレースケール（PNG color type 0）だけ**。
+  ImageMagick は階調が減ると勝手に 4bit に落とすので、`-define png:bit-depth=8`
+  `-define png:color-type=0` で固定し、書き出し後に `identify` で検査している。
+  これを外すと**画面が真っ白になり、エラーも出ない**。
+- `eips -f` は終了コード 0 を返すが、**本当にフル更新されたかの保証にならない**。
+  残像が消えないので、黒画像 → `eips -c` → 本画像 の順で物理的に振らせている。
+- Wi-Fi の制御（`lipc-set-prop com.lab126.cmd wirelessEnable`）には
+  **UI フレームワークが動いている必要がある**。止めた状態では Wi-Fi を入れられない。
+  そのため 1 周ごとに UI を起動 → 通信 → UI 停止 → 描画、の順で回している。
+- UI を起動すると Kindle が**ホーム画面を描く**。こちらが上書きするまでの間、
+  その残像が残る。描画を遅らせると（例: 通信待ちで数分）、
+  Kindle のスクリーンセーバーがむき出しで表示される。
+- **端末はこちらの作業中でも勝手にサスペンドする**。起床アラームを仕掛けずに寝られると
+  何時間も戻ってこない（実際に 5時間15分止まった）。
+  通信・描画の前後で必ず `arm_watchdog` を呼ぶ。
+
+### 古い WebKit（index.html）
+
+端末のブラウザでも開ける状態を保っているため、以下は使えない。
+
+- ES5 のみ。アロー関数、テンプレートリテラル、`const`/`let`、`fetch` は不可。
+- `XMLHttpRequest` の `timeout` が効かない。`setTimeout` + `abort()` で自前に見張る。
+- flexbox 不可。レイアウトは table で組む。
+- `innerHTML` に入れた SVG が描画されないことがある。アイコンは div の組み合わせで描く。
+
+### フォント
+
+Noto CJK は **JP/SC/TC/KR が同じファミリー名を共有**していて、英語ロケールの
+ランナーでは既定で **SC（簡体字）**が選ばれる。`<html lang="ja">` は効かない。
+
+`"Noto Sans CJK JP"` / `"Noto Serif CJK JP"` を**名指しする**こと。
+ワークフローは撮影後に CDP で実際に使われたフォント名を取得し、
+日本語以外なら警告を出す。
+
+### GitHub Actions
+
+- **スケジュール実行（`schedule`）は当てにならない。** 30分おきの指定で
+  1日2回しか走らなかった。GitHub 自身が「負荷が高いと遅延・破棄される」と
+  明記している。**定期実行は cron-job.org に任せる**。
+  ワークフローの `schedule` は保険として残してあるだけ。
+- ランナーの時計は **UTC**。日付を `new Date()` から取ると
+  日本時間の 0〜9時に1日ずれる。日付は `data.json` の `for_date` から取る。
+- ビルド時間は **1分半〜8分** とばらつく。デプロイごと失敗することもある。
+- 日経の取得元として **Stooq と Yahoo はランナーから弾かれる**（bot判定・429）。
+  日経社の公開CSVを第一候補にしている。
+
+---
+
+## 日付の切り替えの仕組み
+
+0時ちょうどに作り始めると、ビルドが間に合わず前日の画像が出る。
+そこで **23:50 に「翌日ぶん」として先に作る**。
+
+- `fetch_data.py` は `LOOKAHEAD_MIN`（20分）先を「今日」とみなす。
+  - 23:50 の実行 → 00:10 を指す → `day_offset = 1`、`for_date = 翌日`
+  - それ以外の実行 → `day_offset = 0`
+- `index.html` は `day_offset` ぶん `daily` の参照位置をずらす
+  （今日のパネル・日の出入り・週間予報すべて）。
+- `dashboard.sh` は **23:40〜24:00 には取りに行かない**。
+  この時間帯は翌日ぶんが公開済みなので、取ると日付が変わる前に翌日の画面が出る。
+- 0時の起床は `MIDNIGHT_OFFSET`（120秒）後、つまり **00:02**。
+
+---
+
+## 作業の進め方
+
+### git
+
+- **`main` に直接 push する。** PR は作らない。
+- コミットメッセージは**日本語**。「何をしたか」ではなく**なぜそうしたか**を書く。
+  実機のログや実測値など、判断の根拠になった事実を残す。
+- コード中のコメントも日本語。
+
+### 変更したら必ず確認する
+
+**ログや実行結果を見ずに「正常です」と言わない。** 一度これをやって、
+0時の寝落ちバグを見逃した。断定する前に必ず裏を取る。
+
+```sh
+# 実行履歴（起動元・所要時間つき）
+gh api "repos/yoshi10321/e-inkdashboard/actions/runs?per_page=5" \
+  --jq '.workflow_runs[] | "run \(.run_number) \(.event) \(.conclusion) \(.created_at) → \(.updated_at)"'
+
+# ジョブ単位の成否（deploy が走ったかは特に重要）
+gh api "repos/yoshi10321/e-inkdashboard/actions/runs/<RUN_ID>/jobs" \
+  --jq '.jobs[] | "\(.name) \(.conclusion)"'
+
+# ワークフローが出した警告・通知（フォント判定などはここに出る）
+gh api "repos/yoshi10321/e-inkdashboard/check-runs/<JOB_ID>/annotations" \
+  --jq '.[] | "\(.annotation_level): \(.message)"'
+
+# Pages に実際に配信されたか
+gh api "repos/yoshi10321/e-inkdashboard/deployments?environment=github-pages&per_page=5" \
+  --jq '.[] | "\(.id) \(.created_at)"'
+```
+
+公開中の `data.json` は WebFetch で確認する（この環境から `github.io` へは curl できない）。
+
+端末側の挙動は `/mnt/us/dashboard.log` でしか分からない。
+**端末の話をするときは必ずログを要求する。**
+
+### 見た目を変えたとき
+
+push する前にローカルで描いて目視する。モックの `data.json` を用意して
+`http://127.0.0.1:8099` に置き、Playwright で撮る。
+Chromium は `/opt/pw-browsers/chromium` を `executablePath` で指定する。
+
+E-ink は階調が少ないので、**文字は黒一色**にする。灰色の小さい文字は
+点々に分解されて読めなくなる。濃淡ではなく大きさと太さで差をつける。
+
+### 製品を挙げるとき
+
+実在する商品ページの URL を添える。確認できない場合は**正確な型番と検索キーワード**
+を示す。URL をでっち上げない。
+
+---
+
+## 設定値
+
+`dashboard.sh` の冒頭（端末側）
+
+| 変数 | 既定 | 意味 |
+|---|---|---|
+| `INTERVAL` | 3600 | 更新間隔（秒） |
+| `MODE` | suspend | `awake` にすると寝ない（動作確認用） |
+| `STOP_FRAMEWORK` | 1 | 描画前に Kindle の UI を止める（ステータスバーを消す） |
+| `FLASH_BEFORE_DRAW` | 1 | 黒→白で残像を消す |
+| `UPDATE_AT_MIDNIGHT` | 1 | 0時すぎにも更新する |
+| `MIDNIGHT_OFFSET` | 120 | 0時から何秒後に起きるか |
+| `QUIET_START`/`QUIET_END` | 0/0 | 夜間停止（両方0で無効） |
+
+`fetch_data.py`
+
+| 定数 | 値 | 備考 |
+|---|---|---|
+| `LAT` / `LON` | 35.84 / 139.80 | 獨協大学前駅。小数2桁に丸めてあり精度は約1km |
+| `LOOKAHEAD_MIN` | 20 | 何分先を「今日」とみなすか |
+
+---
+
+## データの出どころ
+
+| 項目 | 取得元 | 更新頻度 |
+|---|---|---|
+| 天気 | Open-Meteo（日本は気象庁 MSM/GSM が主体） | 随時 |
+| ドル円 | Frankfurter（ECB 参照） | 平日1日1回 |
+| 日経平均 | 日本経済新聞社の日次CSV | 平日の大引け後1回 |
+
+日経は**終値のみ**。ザラ場中の値は出ない。
+
+---
+
+## 未解決・今後
+
+- **電池**: 実測 0.24%/h、満充電から16〜17日。消費の6割はサスペンド中の
+  待機電力なので、起床時間を削っても天井は29日程度。
+  大きく伸ばすには UI の再起動をやめる（`wpa_supplicant` を直接叩く）必要がある。
+- **日経のザラ場中の値**: Stooq と Yahoo が使えないため、APIキー方式を調べる必要がある。
+- **壁掛けクレードル**: 3Dプリントで製作予定。外形 185×128×16mm、
+  収納部 171×119×10mm、前面リップ10mm、左側面60mm開口（USBと電源ボタンを避ける）。
+- Jira（YOSHI プロジェクト）にチケットがあるが、**内容は ESP32 を使う初期案のままで
+  実装と合っていない**。参照しないこと。
