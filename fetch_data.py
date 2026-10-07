@@ -12,6 +12,7 @@ index.html は data.json があればそれを使い、無ければ従来どお�
 import gzip
 import io
 import json
+import os
 import sys
 import urllib.request
 import urllib.error
@@ -19,8 +20,22 @@ from datetime import datetime, timedelta, timezone
 
 JST = timezone(timedelta(hours=9))
 
-LAT = 35.84          # 獨協大学前駅（小数2桁に丸め）
-LON = 139.80
+# 座標は公開リポジトリに置かず、GitHub の Secrets から環境変数で渡す。
+# 設定が無ければ黙って別の場所の天気を出すより、はっきり落とすほうがよい。
+#
+# ローカルで試すとき:  DASH_LAT=35.84 DASH_LON=139.80 python3 fetch_data.py
+def _coord(name):
+    v = os.environ.get(name, "").strip()
+    if not v:
+        raise SystemExit(
+            f"環境変数 {name} が設定されていない。"
+            " GitHub の Secrets（DASH_LAT / DASH_LON）を確認すること。"
+        )
+    return float(v)
+
+
+LAT = _coord("DASH_LAT")
+LON = _coord("DASH_LON")
 TZ = "Asia/Tokyo"
 
 # 何分先を「今日」とみなすか。
@@ -110,6 +125,12 @@ def fetch_weather():
     d = json.loads(get(url))
     if "current" not in d or "daily" not in d:
         raise RuntimeError("天気データの形式が想定と違う")
+
+    # 応答には問い合わせたグリッド点の座標と標高が入っている。
+    # data.json は誰でも取得できるので、ここで落とす。
+    for k in ("latitude", "longitude", "elevation",
+              "generationtime_ms", "utc_offset_seconds"):
+        d.pop(k, None)
     return d
 
 

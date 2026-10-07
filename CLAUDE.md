@@ -9,7 +9,7 @@
 Kindle の内蔵ブラウザは古く、JavaScript も CSS もまともに動かないため。
 
 ```
-cron-job.org            毎時 0分・30分 と 23:50 に GitHub の API を叩く
+cron-job.org            毎時 0分・30分 と 23:50 に GitHub の API を叩く（設定済み）
    ↓ workflow_dispatch
 GitHub Actions          データ取得 → Chromium で描画 → PNG に変換
    ↓
@@ -77,6 +77,31 @@ Noto CJK は **JP/SC/TC/KR が同じファミリー名を共有**していて、
 `"Noto Sans CJK JP"` / `"Noto Serif CJK JP"` を**名指しする**こと。
 ワークフローは撮影後に CDP で実際に使われたフォント名を取得し、
 日本語以外なら警告を出す。
+
+### リポジトリは公開のままにする
+
+非公開にできない理由が2つある。cron-job.org への移行とは無関係。
+
+- **無料プランでは非公開リポジトリから Pages を公開できない**（Pro 以上が必要）
+- Actions の実行時間は、公開なら無制限、非公開だと月2000分。
+  現在は1日48回×約2分で**月約2900分**なので足が出る
+
+Pro にしても Pages のサイト自体は公開のまま（アクセス制限は Enterprise Cloud のみ）。
+
+### 公開されるものに座標を混ぜない
+
+リポジトリも `data.json` も `index.html` も**誰でも読める**。
+
+- 座標は GitHub の Secrets（`DASH_LAT` / `DASH_LON`）から環境変数で渡す。
+  トークンの有効期限は無期限。
+- **Open-Meteo の応答には問い合わせたグリッド点の `latitude` / `longitude` /
+  `elevation` が入っている。** `data.json` に出る前に `fetch_data.py` で剥がしている。
+  天気の項目を増やすときは、応答に新しい位置情報が混ざらないか確認すること。
+- `index.html` の `CONFIG.lat` / `lon` は `null`。公開される HTML に座標を書かない。
+  そのため「data.json が無いとき直接 API を叩く」経路は使えない（失敗表示になる）。
+
+なお画面には地名「草加」と日の出入り時刻が出るので、**おおよその地域は画像から分かる**。
+隠せているのは精度であって、地域そのものではない。
 
 ### GitHub Actions
 
@@ -179,8 +204,14 @@ E-ink は階調が少ないので、**文字は黒一色**にする。灰色の�
 
 | 定数 | 値 | 備考 |
 |---|---|---|
-| `LAT` / `LON` | 35.84 / 139.80 | 獨協大学前駅。小数2桁に丸めてあり精度は約1km |
+| `DASH_LAT` / `DASH_LON` | Secrets | 座標。環境変数で渡す。未設定ならビルドを落とす |
 | `LOOKAHEAD_MIN` | 20 | 何分先を「今日」とみなすか |
+
+ローカルで動かすとき:
+
+```sh
+DASH_LAT=... DASH_LON=... python3 fetch_data.py
+```
 
 ---
 

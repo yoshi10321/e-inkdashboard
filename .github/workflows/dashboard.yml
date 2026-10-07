@@ -116,6 +116,10 @@ jobs:
         # ブラウザから直接 API を叩くと CORS や相手側の制限で失敗することがあるため、
         # ここ（サーバー側）でまとめて取得して data.json に書き出す。
         # 一部が取れなくてもワークフローは止めない。
+        env:
+          # 座標はリポジトリに置かない。Secrets から渡す。
+          DASH_LAT: ${{ secrets.DASH_LAT }}
+          DASH_LON: ${{ secrets.DASH_LON }}
         run: python3 fetch_data.py
 
       - name: ローカルサーバーを起動

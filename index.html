@@ -260,8 +260,11 @@ html.flat, body.flat { width: auto; height: auto; overflow: visible; }
    設定
    ================================================================= */
 var CONFIG = {
-  lat: 35.84,                   // 緯度（獨協大学前駅・小数2桁に丸め）
-  lon: 139.80,                  // 経度（獨協大学前駅・小数2桁に丸め）
+  /* 座標はここには書かない。公開される HTML に出てしまうため。
+     天気は GitHub Actions 側で取得し data.json に入れて渡す。
+     この 2 つが空のままだと、下の直接取得は使えない（失敗表示になる）。 */
+  lat: null,
+  lon: null,
   placeName: "草加",            // 画面右上に出す地名
   timezone: "Asia/Tokyo",
   reloadMinutes: 60,            // 自動リロード間隔（meta refresh と揃えること）
@@ -529,6 +532,9 @@ function renderHeader(apiIso) {
 
 /* --- 天気（Open-Meteo） ------------------------------------------ */
 function loadWeather() {
+  /* 座標を持っていないので直接は取れない。data.json 経由が本筋。 */
+  if (CONFIG.lat === null || CONFIG.lon === null) { return weatherFailed(); }
+
   var url = "https://api.open-meteo.com/v1/forecast"
     + "?latitude=" + CONFIG.lat
     + "&longitude=" + CONFIG.lon
