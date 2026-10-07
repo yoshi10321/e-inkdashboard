@@ -23,6 +23,16 @@ LAT = 35.84          # 獨協大学前駅（小数2桁に丸め）
 LON = 139.80
 TZ = "Asia/Tokyo"
 
+# 何分先を「今日」とみなすか。
+#
+# 画像を作るのに 1〜8 分かかり、ばらつきが大きい。0 時を回ってから作り始めると
+# 端末が取りに来るまでに間に合わないことがある。
+# 日付が変わる少し前に「翌日ぶん」として作っておけば、0 時には出来上がっている。
+#
+# 23:50 に起動した場合: 23:50 + 20分 = 00:10 → 翌日ぶんとして作る
+# 23:30 に起動した場合: 23:30 + 20分 = 23:50 → 当日ぶんのまま
+LOOKAHEAD_MIN = 20
+
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
 
 
@@ -94,8 +104,8 @@ def fetch_weather():
         "&hourly=temperature_2m,weather_code,precipitation_probability"
         "&daily=weather_code,temperature_2m_max,temperature_2m_min,"
         "precipitation_probability_max,sunrise,sunset"
-        # 週間予報は明日から 7 日ぶん並べるので、今日を含めて 8 日ぶん取る
-        f"&timezone={TZ.replace('/', '%2F')}&forecast_days=8"
+        # 明日から 7 日ぶん並べる。先読みで 1 日ずれる場合に備えて 9 日ぶん取る
+        f"&timezone={TZ.replace('/', '%2F')}&forecast_days=9"
     )
     d = json.loads(get(url))
     if "current" not in d or "daily" not in d:
@@ -269,7 +279,20 @@ def fetch_nikkei():
 # --- まとめ ---------------------------------------------------------
 
 def main():
-    out = {"generated": datetime.now(JST).strftime("%Y-%m-%dT%H:%M")}
+    now = datetime.now(JST)
+    target = now + timedelta(minutes=LOOKAHEAD_MIN)
+    # 日付をまたいだ場合だけ 1 になる
+    day_offset = (target.date() - now.date()).days
+
+    out = {
+        "generated": now.strftime("%Y-%m-%dT%H:%M"),
+        # 画面に出す日付。端末はこれを見て「本日ぶんか」を判断する
+        "for_date": target.strftime("%Y-%m-%d"),
+        # 天気データを何日ずらして読むか（0 なら当日、1 なら翌日）
+        "day_offset": day_offset,
+    }
+    if day_offset:
+        print(f"翌日ぶん（{out['for_date']}）として作る")
     errors = {}
     failed = []
 

@@ -71,10 +71,9 @@ UPDATE_AT_MIDNIGHT=1
 
 # 0時の更新を何秒ずらすか。
 #
-# 画像を作るのに 3 分ほどかかる。0時ちょうどに起きると、まだ前日ぶんしか
-# 公開されておらず、描き直しが二度手間になる。
-# 画像の生成を 0時に始めてもらい、こちらは出来上がった頃に起きる。
-MIDNIGHT_OFFSET=300
+# 画像は 23:50 の実行で「翌日ぶん」として作られ、0 時前には出来上がっている。
+# ビルドの完了を待つ必要がないので、0 時直後で足りる。
+MIDNIGHT_OFFSET=120
 
 # 夜間は更新を止める（電池の節約）
 #
@@ -241,6 +240,29 @@ download_png() {
     fi
     rm -f "$dest.tmp"
     return 1
+}
+
+# 公開されている画像が「いつのぶん」か記録する。
+#
+# for_date は、その画像がどの日付として作られたかを表す。
+# 日付が変わる少し前に「翌日ぶん」として作ることがあるため、
+# 生成時刻ではなくこちらを見る。
+log_image_age() {
+    IMAGE_IS_TODAY=0
+    body=$(wget -q --no-check-certificate -O - "${DATA_URL}?t=$(date +%s)" 2>/dev/null)
+    gen=$(echo "$body" | sed -n 's/.*"for_date":"\([^"]*\)".*/\1/p')
+    # 古い形式（for_date が無い）なら生成時刻で代用する
+    [ -z "$gen" ] && gen=$(echo "$body" | sed -n 's/.*"generated":"\([^"]*\)".*/\1/p')
+
+    if [ -z "$gen" ]; then
+        log "画像の日付を取得できなかった"
+        return
+    fi
+    today=$(date '+%Y-%m-%d')
+    case "$gen" in
+        "$today"*) IMAGE_IS_TODAY=1; log "画像は本日ぶん ($gen)" ;;
+        *)         log "警告: 画像が本日ぶんでない ($gen / 本日は $today)" ;;
+    esac
 }
 
 fetch_all() {
@@ -440,6 +462,19 @@ while true; do
             log "夜間のため更新しない。${QUIET_END}時まで寝る（$(( (NEXT - NOW) / 60 ))分）"
             wait_until "$NEXT"
             continue
+        fi
+    fi
+
+    # 23:45〜24:00 には取りに行かない。
+    #
+    # この時間帯には、すでに翌日ぶんの画像が公開されている。
+    # うっかり取ると、日付が変わる前に翌日の画面が出てしまう。
+    # 周回がこの窓に当たる場合は手前（23:44）にずらす。
+    if [ "$UPDATE_AT_MIDNIGHT" = "1" ]; then
+        next_tod=$(( (SECS_TODAY + INTERVAL) % 86400 ))
+        if [ "$next_tod" -ge 84300 ]; then
+            NEXT=$(( NOW + 84240 - SECS_TODAY ))
+            log "次の周回が 23:45〜24:00 に当たるので 23:44 にずらす"
         fi
     fi
 

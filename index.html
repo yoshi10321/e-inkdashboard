@@ -546,26 +546,31 @@ function loadWeather() {
 }
 
 /* 天気の描画。API から直接取った場合も data.json 経由の場合も同じ形。 */
-function renderWeather(d) {
+/* forDate  … 画面に出す日付（"2026-10-08"）。翌日ぶんとして作るとき用。
+   dayOffset … daily を何日ずらして読むか（0 なら当日、1 なら翌日）。 */
+function renderWeather(d, forDate, dayOffset) {
     if (!d || !d.current || !d.daily) { return weatherFailed(); }
 
+    var o = dayOffset || 0;
     var cur = d.current;
-    if (cur.time) { renderHeader(cur.time); }
+    /* 日付は forDate を優先する。無ければ API の現在時刻から取る。 */
+    if (forDate) { renderHeader(forDate); }
+    else if (cur.time) { renderHeader(cur.time); }
 
     el("wxIcon").innerHTML = iconHtml(cur.weather_code, 112);
     el("wxTemp").innerHTML =
       Math.round(cur.temperature_2m) + '<span class="deg">&deg;</span>';
     el("wxDesc").innerHTML = weatherLabel(cur.weather_code);
 
-    var hi = Math.round(d.daily.temperature_2m_max[0]);
-    var lo = Math.round(d.daily.temperature_2m_min[0]);
-    var pop = d.daily.precipitation_probability_max[0];
+    var hi = Math.round(d.daily.temperature_2m_max[o]);
+    var lo = Math.round(d.daily.temperature_2m_min[o]);
+    var pop = d.daily.precipitation_probability_max[o];
     el("wxSub").innerHTML =
       "最高 <b>" + hi + "&deg;</b>　最低 <b>" + lo + "&deg;</b>　"
       + "降水 <b>" + (pop === null ? "--" : pop) + "%</b>";
 
-    var sr = String(d.daily.sunrise[0]).split("T")[1] || "";
-    var ss = String(d.daily.sunset[0]).split("T")[1] || "";
+    var sr = String(d.daily.sunrise[o]).split("T")[1] || "";
+    var ss = String(d.daily.sunset[o]).split("T")[1] || "";
     el("wxMeta").innerHTML =
       "体感 " + Math.round(cur.apparent_temperature) + "&deg;　"
       + "湿度 " + Math.round(cur.relative_humidity_2m) + "%　"
@@ -578,7 +583,7 @@ function renderWeather(d) {
     /* 今日の天気は左の大きいパネルに出ているので、この行は明日から始める。
        API からは 8 日分もらっているため、明日以降で 7 コマ埋まる。 */
     var html = "<tr>", i, n = 0;
-    for (i = 1; i < d.daily.time.length && n < 7; i++, n++) {
+    for (i = o + 1; i < d.daily.time.length && n < 7; i++, n++) {
       var dt = parseISODate(d.daily.time[i]);
       var dow = dt.getDay();
       var cls = "";
@@ -819,7 +824,9 @@ function start() {
     if (d.generated) { renderHeader(d.generated); }
 
     /* 個別に欠けている場合は、その項目だけ直接取得に切り替える */
-    if (d.weather) { renderWeather(d.weather); } else { loadWeather(); }
+    if (d.weather) {
+      renderWeather(d.weather, d.for_date, d.day_offset);
+    } else { loadWeather(); }
     if (d.fx)      { renderSeries("fx", d.fx, 2); } else { loadFx(); }
     if (d.nikkei)  { renderSeries("nk", d.nikkei, 0); } else { loadNikkei(); }
   }, startWithLiveApis, 8000);
