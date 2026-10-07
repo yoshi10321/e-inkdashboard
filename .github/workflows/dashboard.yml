@@ -66,6 +66,8 @@ env:
 jobs:
   render:
     runs-on: ubuntu-latest
+    # 既定の制限は 6 時間。apt で固まると延々と居座るので短くする。
+    timeout-minutes: 12
 
     steps:
       - uses: actions/checkout@v4
@@ -73,9 +75,19 @@ jobs:
       - name: 日本語フォントと ImageMagick を入れる
         # ・fonts-noto-cjk : ランナーには日本語フォントが無く、入れないと本文が豆腐（□）になる
         # ・imagemagick    : 画像の回転とグレースケール化に使う。ランナーに標準では入っていない
+        #
+        # このステップがビルド時間のばらつきの原因だった（15 分以上固まったこともある）。
+        # fonts-noto-cjk-extra は追加ウェイトと Mono で、ここでは使っていないので外した。
+        # 推奨パッケージも入れない。
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq fonts-noto-cjk fonts-noto-cjk-extra imagemagick
+          sudo apt-get update -qq -o Acquire::Retries=3
+          sudo apt-get install -y -qq --no-install-recommends \
+            -o Acquire::Retries=3 \
+            fonts-noto-cjk imagemagick
+          echo "入っているフォント:"
+          fc-list : family | tr ',' '\n' | grep -i "Noto .* CJK JP" | sort -u | head
 
           # Noto Sans CJK は JP/SC/TC/KR が同じファミリー名を共有していて、
           # 英語ロケールの環境では既定で SC（簡体字）の字形が選ばれる。
