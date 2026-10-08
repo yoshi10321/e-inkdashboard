@@ -119,6 +119,11 @@ exec >/dev/null 2>&1
 
 FRAMEWORK_STOPPED=0
 
+# スクリプトを起動してから最初の描画かどうか。
+# 再起動後はホーム画面が長く出ていて焼き付いていることがあるため、
+# 最初の 1 回だけ消し込みを強くする。
+FIRST_DRAW=1
+
 stop_framework() {
     [ "$STOP_FRAMEWORK" = "1" ] || return 0
     [ "$FRAMEWORK_STOPPED" = "1" ] && return 0
@@ -310,11 +315,28 @@ show_image() {
     # 残る。Kindle 自身の UI を 1周ごとに起動し直している都合で、その間に
     # 描かれたものが残像になりやすい。
     # 黒 → 白 を一度通すと、どの画素も必ず両端まで振られるので影が消える。
+    #
+    # ただし同じ絵が長時間出ていた場合（端末が再起動してホーム画面が
+    # 何時間も表示されたときなど）は、1 回では抜けきらない。
+    # スクリプトを起動した直後だけ、回数を増やして強く振る。
     if [ "$FLASH_BEFORE_DRAW" = "1" ] && [ -f "$BLACKIMG" ]; then
-        eips -g "$BLACKIMG"
-        sleep 1
-        log "黒→白で残像を消した"
+        if [ "$FIRST_DRAW" = "1" ]; then
+            n=0
+            while [ $n -lt 3 ]; do
+                eips -g "$BLACKIMG"
+                sleep 1
+                eips -c
+                sleep 1
+                n=$((n + 1))
+            done
+            log "起動直後のため、黒→白を3回通して残像を強く消した"
+        else
+            eips -g "$BLACKIMG"
+            sleep 1
+            log "黒→白で残像を消した"
+        fi
     fi
+    FIRST_DRAW=0
     eips -c          # 白に戻す
     sleep 1
 
