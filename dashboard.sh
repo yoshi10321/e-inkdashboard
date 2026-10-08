@@ -349,18 +349,40 @@ show_image() {
 
 suspend_for() {
     secs=$1
+
+    # 使える RTC すべてにアラームを仕掛ける。
+    #
+    # 以前は rtc1 に仕掛かった時点で打ち切っていたが、
+    # 2026-10-08 22:30 の回でそのアラームが効かず、46分寝過ごした
+    # （予定 23:29:37 に対して実際の起床は 00:16:01）。
+    # 片方が効かなくても、もう片方で起きられるようにしておく。
+    armed=""
     for rtc in /sys/class/rtc/rtc1/wakealarm /sys/class/rtc/rtc0/wakealarm; do
         [ -w "$rtc" ] || continue
         echo 0 > "$rtc" 2>/dev/null
         if echo "+$secs" > "$rtc" 2>/dev/null; then
-            log "サスペンド開始 (${secs}秒後に起床予定, $rtc)"
-            echo mem > /sys/power/state 2>>"$LOG"
-            log "起床"
-            return 0
+            armed="$armed $rtc"
         fi
     done
-    log "RTC が使えなかったので通常の sleep で待機"
-    sleep "$secs"
+
+    if [ -z "$armed" ]; then
+        log "RTC が使えなかったので通常の sleep で待機"
+        sleep "$secs"
+        return 0
+    fi
+
+    log "サスペンド開始 (${secs}秒後に起床予定,${armed})"
+    before=$(date +%s)
+    echo mem > /sys/power/state 2>>"$LOG"
+    slept=$(( $(date +%s) - before ))
+
+    # 予定より 2 分以上長く寝ていたら、アラームが効かなかったということ。
+    # 黙って遅れると画面が何時間も古いままになるので、必ず記録する。
+    if [ "$slept" -gt $(( secs + 120 )) ]; then
+        log "警告: 起床が $(( slept - secs ))秒 遅れた（予定 ${secs}秒 / 実際 ${slept}秒）"
+    else
+        log "起床"
+    fi
     return 0
 }
 
@@ -472,9 +494,10 @@ while true; do
     # 23:30 の実行が遅れた場合も見込んで、23:40 から窓を取る。
     # 周回がこの窓に当たる場合は手前（23:39）にずらす。
     if [ "$UPDATE_AT_MIDNIGHT" = "1" ]; then
+        # 23:40 = 85200 秒、23:39 = 85140 秒
         next_tod=$(( (SECS_TODAY + INTERVAL) % 86400 ))
-        if [ "$next_tod" -ge 84000 ]; then
-            NEXT=$(( NOW + 83940 - SECS_TODAY ))
+        if [ "$next_tod" -ge 85200 ]; then
+            NEXT=$(( NOW + 85140 - SECS_TODAY ))
             log "次の周回が 23:40〜24:00 に当たるので 23:39 にずらす"
         fi
     fi
