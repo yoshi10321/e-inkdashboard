@@ -55,10 +55,23 @@ INTERVAL=3600
 #   suspend : 更新の合間はサスペンドする。常用はこちら。
 MODE="suspend"
 
-# Kindle の UI（ホーム画面・ステータスバー）を描画前に止めるか
+# Kindle の UI（ホーム画面・ステータスバー）を止めるか
 #   1 : 止める。時計やステータスバーが描かれなくなる。
 #   0 : 止めない。画面の端に Kindle 標準のステータスバーが残る。
 STOP_FRAMEWORK=1
+
+# UI を起動せずに接続できなかったとき、従来どおり UI を起こしてやり直すか
+#
+# 2026-10-10 の調査で、UI を止めたままでも
+#   lipc-set-prop com.lab126.cmd wirelessEnable 1
+# で 6 秒で接続でき、wget も通ることを実機で確認した（wifi-probe.log）。
+# cmd は PID 2047 で lxinit や Xorg より先に起動する独立したデーモンであり、
+# lab126_gui を止めても死なない。UI は Wi-Fi に必要ではなかった。
+#
+# ただし調査はサスペンドを挟まずに行ったので、**復帰直後も同じとは未確認**。
+# 繋がらなければ UI を起こす経路に落ちる。落ちた回数はログに残すので、
+# 一度も落ちないことが確認できたら 0 にしてよい。
+UI_FALLBACK=1
 
 # バッテリー残量のアイコンを重ねて表示するか
 SHOW_BATTERY=1
@@ -137,6 +150,11 @@ stop_framework() {
     sleep 3
 }
 
+# UI を起こす。
+#
+# 通常の周回では**呼ばない**。呼ぶのは Wi-Fi が繋がらなかったときだけ。
+# UI を起こすと Kindle がホーム画面を描き、同じ図形が同じ場所に重なって
+# E-ink に焼き付く（10/5 と 10/10 に幅 51〜52px の帯を実測）。
 start_framework() {
     [ "$FRAMEWORK_STOPPED" = "1" ] || return 0
     if [ -x /etc/init.d/framework ]; then
@@ -145,10 +163,13 @@ start_framework() {
         start lab126_gui 2>/dev/null || initctl start lab126_gui 2>/dev/null
     fi
     FRAMEWORK_STOPPED=0
-    log "UI を再開した（ネットワーク作業のため）"
+    log "UI を起こした（接続できなかったため。画面に焼き付きが残る）"
     # 起動しきるまで待つ。短すぎると lipc がまだ応答しない。
     sleep 15
 }
+
+# UI を起こした回数。0 のままなら UI_FALLBACK を切ってよい。
+UI_FALLBACK_COUNT=0
 
 # --- 不意のサスペンド対策 ------------------------------------------
 #
@@ -180,12 +201,25 @@ wifi_off() {
     log "Wi-Fi を切った"
 }
 
+# cmState が CONNECTED になっただけでは通信できない。
+#
+# 10/10 の調査で、CONNECTED かつ IP 払い出し済みになった**同じ秒**に wget を
+# 撃ったところ即座に失敗した。wget の待ち時間は 20 秒に設定していたのに
+# 待たずに戻ったので、タイムアウトではなく名前解決の失敗である。
+# 1 秒後に撃ち直したら 8594 bytes 取れた。
+#
+# そのため IP が付くまで待ち、さらにこの秒数だけ置く。
+NET_SETTLE=3
+
 wait_online() {
     i=0
     while [ $i -lt 30 ]; do
         state=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)
-        if [ "$state" = "CONNECTED" ]; then
-            log "Wi-Fi 接続 OK (${i}回目の確認)"
+        # IP が付いていなければ、まだ DHCP が終わっていない
+        ip=$(ifconfig wlan0 2>/dev/null | sed -n 's/.*inet addr:\([0-9.]*\).*/\1/p')
+        if [ "$state" = "CONNECTED" ] && [ -n "$ip" ]; then
+            log "Wi-Fi 接続 OK（$(( i * 2 ))秒 / IP あり）"
+            sleep "$NET_SETTLE"
             return 0
         fi
         # 接続待ちの最中に寝かされても戻ってこられるようにする
@@ -193,7 +227,8 @@ wait_online() {
         sleep 2
         i=$((i + 1))
     done
-    log "Wi-Fi 接続タイムアウト (最後の状態: $state)"
+    if [ -n "$ip" ]; then has_ip=あり; else has_ip=なし; fi
+    log "Wi-Fi 接続タイムアウト（状態: ${state:-不明} / IP: $has_ip）"
     return 1
 }
 
@@ -225,8 +260,14 @@ round_to_5() {
 download_png() {
     url=$1
     dest=$2
-    if wget -q --no-check-certificate -O "$dest.tmp" "$url" 2>>"$LOG"; then
-        if [ -s "$dest.tmp" ] && head -c 4 "$dest.tmp" | grep -q "PNG"; then
+    # 繋がった直後は一度こけることがあるので、一度だけ撃ち直す
+    if ! wget -q --no-check-certificate -O "$dest.tmp" "$url" 2>>"$LOG"; then
+        log "wget 1回目が失敗した。3秒後に撃ち直す: $url"
+        sleep 3
+        wget -q --no-check-certificate -O "$dest.tmp" "$url" 2>>"$LOG"
+    fi
+    if [ -s "$dest.tmp" ]; then
+        if head -c 4 "$dest.tmp" | grep -q "PNG"; then
             # eips が読めるのは 8bit グレースケール(色種別0)の PNG だけ。
             # 4bit などで来ると、描画が失敗して画面が真っ白になる。
             # PNG の IHDR は 24 バイト目が bit深度、25 バイト目が色種別。
@@ -255,6 +296,11 @@ download_png() {
 log_image_age() {
     IMAGE_IS_TODAY=0
     body=$(wget -q --no-check-certificate -O - "${DATA_URL}?t=$(date +%s)" 2>/dev/null)
+    if [ -z "$body" ]; then
+        # 繋がった直後は一度こけることがある
+        sleep 3
+        body=$(wget -q --no-check-certificate -O - "${DATA_URL}?t=$(date +%s)" 2>/dev/null)
+    fi
     gen=$(echo "$body" | sed -n 's/.*"for_date":"\([^"]*\)".*/\1/p')
     # 古い形式（for_date が無い）なら生成時刻で代用する
     [ -z "$gen" ] && gen=$(echo "$body" | sed -n 's/.*"generated":"\([^"]*\)".*/\1/p')
@@ -474,6 +520,15 @@ trap cleanup INT TERM
 
 # --- メインループ ---------------------------------------------------
 
+# UI は起動時に一度だけ止め、以降二度と起こさない。
+#
+# このスクリプトは本として開いて起動するので、この時点では必ず UI が
+# 動いていてホーム画面が描かれている。ここで止めてしまえば、以降
+# ホーム画面が描かれる機会は無くなり、帯の進行も止まる。
+# 起動時までに溜まった焼き付きは、最初の描画で黒→白を 3 回通して抜く。
+arm_watchdog
+stop_framework
+
 while true; do
     if [ -f "$STOPFILE" ]; then
         log "停止ファイルを検出した"
@@ -548,22 +603,43 @@ while true; do
         fi
     fi
 
-    # 1. ネットワーク作業は UI が動いている状態で行う
+    # 1. 通信する。UI は起こさない。
+    #
+    #    以前は 1 周ごとに UI を起動していた。Wi-Fi の制御に UI が必要だと
+    #    思っていたからだが、10/10 の実機調査でそれは誤りだと分かった。
+    #    UI を止めたままでも wirelessEnable 1 で 6 秒で繋がる。
+    #
     #    通信も描画も、途中で寝かされる可能性がある。先にアラームを仕掛ける。
     arm_watchdog
-    start_framework
-    arm_watchdog
     wifi_on
+    ONLINE=0
     if wait_online; then
+        ONLINE=1
+    elif [ "$UI_FALLBACK" = "1" ]; then
+        # 想定外。サスペンド復帰直後だと駄目なのかもしれない。
+        # 画面が止まるほうが困るので、ここだけは UI を起こして取りに行く。
+        log "警告: UI なしで接続できなかった"
+        start_framework
+        arm_watchdog
+        wifi_on
+        if wait_online; then
+            ONLINE=1
+            UI_FALLBACK_COUNT=$(( UI_FALLBACK_COUNT + 1 ))
+            log "UI を起こして接続できた（起動後 ${UI_FALLBACK_COUNT}回目）"
+        fi
+    fi
+
+    if [ "$ONLINE" = "1" ]; then
         fetch_all
     else
         log "オフラインのため前回の画像を表示する"
     fi
 
-    # 2. Wi-Fi を切る（UI が動いているうちに）
+    # 2. Wi-Fi を切る
     wifi_off
 
-    # 3. UI を止めてから描画する（ステータスバーに上書きされないように）
+    # 3. 描画する。
+    #    UI は通常もう止まっている。起こしてしまった場合だけ止め直す。
     stop_framework
     arm_watchdog
     show_image
@@ -571,8 +647,8 @@ while true; do
     # 4. 0時台に前日ぶんの画像しか無かった場合は、早めに出直す。
     #
     #    画像を作る GitHub 側のスケジュールは当てにならず、0時に間に合わない
-    #    ことがある。かといってここで待つと、その間 Kindle 自身の
-    #    スクリーンセーバーが画面に残ってしまう（UI を起こしているため）。
+    #    ことがある。かといってここで待つと、その間 Wi-Fi が入ったまま
+    #    電池を舐めるだけで画面も変わらない。
     #    先に描いてしまってから、短い間隔で出直すほうがよい。
     if [ "$UPDATE_AT_MIDNIGHT" = "1" ] \
        && [ "$SECS_TODAY" -lt 1800 ] \
