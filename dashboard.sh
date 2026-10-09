@@ -396,6 +396,13 @@ suspend_for() {
     log "サスペンド開始 (${secs}秒後に起床予定,${armed})"
     before=$(date +%s)
     echo mem > /sys/power/state 2>>"$LOG"
+
+    # 起きた瞬間にアラームは消費されている。次を仕掛けるまでの間に
+    # 端末が自分で寝ると、起こす者がいなくなる。
+    # 実際 2026-10-08 と 10-09 の 2 回、この隙間で数時間止まった。
+    # 何よりも先に仕掛け直す。
+    arm_watchdog
+
     slept=$(( $(date +%s) - before ))
 
     # 予定より 2 分以上長く寝ていたら、アラームが効かなかったということ。
@@ -424,8 +431,10 @@ wait_until() {
         # 停止ファイルが置かれていたら、待っている途中でも終わる
         [ -f "$STOPFILE" ] && return 0
 
-        # 残りがごく僅かなら、サスペンドし直すより起きていた方が早い
+        # 残りがごく僅かなら、サスペンドし直すより起きていた方が早い。
+        # ただし起きたまま待つ間も端末は勝手に寝るので、保険を掛けておく。
         if [ "$remain" -lt 60 ] || [ "$MODE" != "suspend" ]; then
+            arm_watchdog
             sleep "$remain"
             return 0
         fi
@@ -443,6 +452,7 @@ wait_until() {
             quick=$(( quick + 1 ))
             if [ "$quick" -ge 5 ]; then
                 log "何度もすぐ起こされる（USB 接続中など）。以後は起きたまま待つ"
+                arm_watchdog
                 sleep "$remain"
                 return 0
             fi
