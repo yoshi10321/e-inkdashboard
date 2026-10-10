@@ -104,7 +104,8 @@ QUIET_END=0
 
 # ====================================================================
 
-WORKDIR=/mnt/us
+# 端末では常に /mnt/us。tests/ から読み込むときだけ差し替える。
+WORKDIR=${DASH_WORKDIR:-/mnt/us}
 IMG="$WORKDIR/dashboard.png"
 BATIMG="$WORKDIR/dashboard_bat.png"
 BLACKIMG="$WORKDIR/dashboard_black.png"
@@ -125,7 +126,8 @@ log "===== 起動 (mode=$MODE interval=${INTERVAL}s UI停止=$STOP_FRAMEWORK) ==
 # スクリプトの標準出力・標準エラーはそのまま画面に描かれてしまい、
 # eips の内部メッセージがダッシュボードの上に重なる。すべて捨てる。
 # （log() は直接ファイルへ書くので、この後もログは残る）
-exec >/dev/null 2>&1
+# テストから読み込むときは捨てない。
+[ -n "$DASHBOARD_LIB" ] || exec >/dev/null 2>&1
 
 # --- UI フレームワーク ----------------------------------------------
 # ファームウェアによって init スクリプト方式と upstart 方式があるので両方試す。
@@ -211,24 +213,28 @@ wifi_off() {
 # そのため IP が付くまで待ち、さらにこの秒数だけ置く。
 NET_SETTLE=3
 
+# sh に local が無いので、関数の中だけで使う変数は _ で始める。
+# 以前ここを i / state / ip という名前にしていて、呼び出し側の i を
+# 書き換えてしまった（テストが無限ループして気づいた）。
 wait_online() {
-    i=0
-    while [ $i -lt 30 ]; do
-        state=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)
+    _i=0
+    while [ $_i -lt 30 ]; do
+        _state=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)
         # IP が付いていなければ、まだ DHCP が終わっていない
-        ip=$(ifconfig wlan0 2>/dev/null | sed -n 's/.*inet addr:\([0-9.]*\).*/\1/p')
-        if [ "$state" = "CONNECTED" ] && [ -n "$ip" ]; then
-            log "Wi-Fi 接続 OK（$(( i * 2 ))秒 / IP あり）"
+        _ip=$(ifconfig wlan0 2>/dev/null \
+              | sed -n 's/.*inet addr:\([0-9.]*\).*/\1/p')
+        if [ "$_state" = "CONNECTED" ] && [ -n "$_ip" ]; then
+            log "Wi-Fi 接続 OK（$(( _i * 2 ))秒 / IP あり）"
             sleep "$NET_SETTLE"
             return 0
         fi
         # 接続待ちの最中に寝かされても戻ってこられるようにする
         arm_watchdog
         sleep 2
-        i=$((i + 1))
+        _i=$((_i + 1))
     done
-    if [ -n "$ip" ]; then has_ip=あり; else has_ip=なし; fi
-    log "Wi-Fi 接続タイムアウト（状態: ${state:-不明} / IP: $has_ip）"
+    if [ -n "$_ip" ]; then _has_ip=あり; else _has_ip=なし; fi
+    log "Wi-Fi 接続タイムアウト（状態: ${_state:-不明} / IP: $_has_ip）"
     return 1
 }
 
@@ -518,6 +524,94 @@ wait_until() {
     done
 }
 
+# --- 1 周ぶんの通信 -------------------------------------------------
+#
+# Wi-Fi を入れて取得し、切って、UI が起きていれば止め直すまで。
+# 結果は ONLINE（1 なら取得できた）に入る。
+#
+# メインループに直書きせず関数にしてあるのは、順序そのものが大事だから。
+# 「UI を起こしたら必ず止め直す」「取得は繋がったときだけ」「最後に必ず
+# Wi-Fi を切る」のどれを落としても、画面か電池のどちらかが壊れる。
+# tests/test_dashboard_sh.sh がこの関数を直接呼んで確かめている。
+fetch_cycle() {
+    arm_watchdog
+    wifi_on
+    ONLINE=0
+    if wait_online; then
+        ONLINE=1
+    elif [ "$UI_FALLBACK" = "1" ]; then
+        # 想定外。サスペンド復帰直後だと駄目なのかもしれない。
+        # 画面が止まるほうが困るので、ここだけは UI を起こして取りに行く。
+        log "警告: UI なしで接続できなかった"
+        start_framework
+        arm_watchdog
+        wifi_on
+        if wait_online; then
+            ONLINE=1
+            UI_FALLBACK_COUNT=$(( UI_FALLBACK_COUNT + 1 ))
+            log "UI を起こして接続できた（起動後 ${UI_FALLBACK_COUNT}回目）"
+        fi
+    fi
+
+    if [ "$ONLINE" = "1" ]; then
+        fetch_all
+    else
+        log "オフラインのため前回の画像を表示する"
+    fi
+
+    # Wi-Fi は必ず切る。入れっぱなしだと待機電力が効いてくる。
+    wifi_off
+
+    # UI は通常もう止まっている。起こしてしまった場合だけ止め直す。
+    # ここを飛ばすと、描画にステータスバーが重なる。
+    stop_framework
+}
+
+
+# --- 次に起きる時刻を決める -----------------------------------------
+#
+# 第1引数: 現在の epoch 秒 / 第2引数: 今日の 0時からの経過秒数
+# 決めた時刻を epoch 秒で返す。
+#
+# ここは一度しくじっている。23:40 を 84000 秒と書いていたが、それは 23:20。
+# 確認のとき「23:39 にずらす」と決め打ちで出力していたせいで、
+# 計算結果を見ずに通してしまった。**計算した値を時刻に戻して確かめること。**
+# 以降は tests/test_dashboard_sh.sh で固めてある。
+plan_next() {
+    _now=$1
+    _today=$2
+    _next=$(( _now + INTERVAL ))
+
+    [ "$UPDATE_AT_MIDNIGHT" = "1" ] || { echo "$_next"; return 0; }
+
+    # 23:40〜24:00 には取りに行かない。
+    #
+    # この時間帯には、すでに翌日ぶんの画像が公開されていることがある。
+    # うっかり取ると、日付が変わる前に翌日の画面が出てしまう。
+    # 23:30 の実行が遅れた場合も見込んで、23:40 から窓を取る。
+    # 周回がこの窓に当たる場合は手前（23:39）にずらす。
+    #   23:40 = 85200 秒、23:39 = 85140 秒
+    _tod=$(( (_today + INTERVAL) % 86400 ))
+    if [ "$_tod" -ge 85200 ]; then
+        _next=$(( _now + 85140 - _today ))
+        log "次の周回が 23:40〜24:00 に当たるので 23:39 にずらす"
+    fi
+
+    # 次の 0時が INTERVAL より先に来るなら、そちらを優先する
+    if [ "$_today" -lt "$MIDNIGHT_OFFSET" ]; then
+        # 今日のぶんがまだ来ていない（0時を回った直後）
+        _mid=$(( _now + MIDNIGHT_OFFSET - _today ))
+    else
+        _mid=$(( _now + 86400 - _today + MIDNIGHT_OFFSET ))
+    fi
+    if [ "$_mid" -lt "$_next" ]; then
+        _next=$_mid
+        log "次は 0時すぎに更新する（$(( (_next - _now) / 60 ))分後）"
+    fi
+
+    echo "$_next"
+}
+
 # --- 後始末 ---------------------------------------------------------
 
 cleanup() {
@@ -526,6 +620,10 @@ cleanup() {
     exit 0
 }
 trap cleanup INT TERM
+
+# ここから下はメインループ。
+# tests/ から読み込むときは、上の関数定義だけ使いたいので戻る。
+[ -n "$DASHBOARD_LIB" ] && return 0
 
 # --- メインループ ---------------------------------------------------
 
@@ -548,7 +646,7 @@ while true; do
     # 次に更新する時刻を先に決めておく。
     # 通信や描画にかかった時間ぶん間隔がずれていくのを防ぐ。
     NOW=$(date +%s)
-    NEXT=$(( NOW + INTERVAL ))
+    # NEXT は下の plan_next で決める。夜間停止だけは先に横取りする。
 
     # 今日の 0時からの経過秒数。
     # date の出力は 08 のように 0 で始まるので、八進数と解釈されないよう剥がす。
@@ -583,34 +681,7 @@ while true; do
         fi
     fi
 
-    # 23:40〜24:00 には取りに行かない。
-    #
-    # この時間帯には、すでに翌日ぶんの画像が公開されていることがある。
-    # うっかり取ると、日付が変わる前に翌日の画面が出てしまう。
-    # 23:30 の実行が遅れた場合も見込んで、23:40 から窓を取る。
-    # 周回がこの窓に当たる場合は手前（23:39）にずらす。
-    if [ "$UPDATE_AT_MIDNIGHT" = "1" ]; then
-        # 23:40 = 85200 秒、23:39 = 85140 秒
-        next_tod=$(( (SECS_TODAY + INTERVAL) % 86400 ))
-        if [ "$next_tod" -ge 85200 ]; then
-            NEXT=$(( NOW + 85140 - SECS_TODAY ))
-            log "次の周回が 23:40〜24:00 に当たるので 23:39 にずらす"
-        fi
-    fi
-
-    # 次の 0時が INTERVAL より先に来るなら、そちらを優先する
-    if [ "$UPDATE_AT_MIDNIGHT" = "1" ]; then
-        if [ "$SECS_TODAY" -lt "$MIDNIGHT_OFFSET" ]; then
-            # 今日のぶんがまだ来ていない（0時を回った直後）
-            midnight=$(( NOW + MIDNIGHT_OFFSET - SECS_TODAY ))
-        else
-            midnight=$(( NOW + 86400 - SECS_TODAY + MIDNIGHT_OFFSET ))
-        fi
-        if [ "$midnight" -lt "$NEXT" ]; then
-            NEXT=$midnight
-            log "次は 0時すぎに更新する（$(( (NEXT - NOW) / 60 ))分後）"
-        fi
-    fi
+    NEXT=$(plan_next "$NOW" "$SECS_TODAY")
 
     # 1. 通信する。UI は起こさない。
     #
@@ -619,37 +690,9 @@ while true; do
     #    UI を止めたままでも wirelessEnable 1 で 6 秒で繋がる。
     #
     #    通信も描画も、途中で寝かされる可能性がある。先にアラームを仕掛ける。
-    arm_watchdog
-    wifi_on
-    ONLINE=0
-    if wait_online; then
-        ONLINE=1
-    elif [ "$UI_FALLBACK" = "1" ]; then
-        # 想定外。サスペンド復帰直後だと駄目なのかもしれない。
-        # 画面が止まるほうが困るので、ここだけは UI を起こして取りに行く。
-        log "警告: UI なしで接続できなかった"
-        start_framework
-        arm_watchdog
-        wifi_on
-        if wait_online; then
-            ONLINE=1
-            UI_FALLBACK_COUNT=$(( UI_FALLBACK_COUNT + 1 ))
-            log "UI を起こして接続できた（起動後 ${UI_FALLBACK_COUNT}回目）"
-        fi
-    fi
+    fetch_cycle
 
-    if [ "$ONLINE" = "1" ]; then
-        fetch_all
-    else
-        log "オフラインのため前回の画像を表示する"
-    fi
-
-    # 2. Wi-Fi を切る
-    wifi_off
-
-    # 3. 描画する。
-    #    UI は通常もう止まっている。起こしてしまった場合だけ止め直す。
-    stop_framework
+    # 2. 描画する。
     arm_watchdog
     show_image
 

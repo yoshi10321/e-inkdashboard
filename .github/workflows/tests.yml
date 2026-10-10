@@ -1,0 +1,68 @@
+name: Tests
+
+# 毎時のダッシュボード生成（dashboard.yml）とは分けてある。
+# あちらは 1 日 48 回走るので、そこにテストを足すと実行時間が倍になる。
+# こちらは push したときだけ走る。
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'fetch_data.py'
+      - 'dashboard.sh'
+      - 'tests/**'
+      - '.github/workflows/tests.yml'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: fetch_data.py のテスト
+        # 外の API は叩かない。相手が落ちているだけでテストが赤くなると、
+        # 赤いのが普通の状態になって誰も見なくなる。
+        run: python3 -I tests/test_fetch_data.py
+
+      - name: dashboard.sh のテスト（dash）
+        # 端末の /bin/sh は busybox。bash の書き方が混ざっていないか、
+        # POSIX 寄りの dash で確かめる。ubuntu の /bin/sh も dash。
+        run: dash tests/test_dashboard_sh.sh
+
+      - name: dashboard.sh のテスト（busybox ash）
+        # 端末に一番近い形。ここだけで落ちるなら busybox 固有の問題。
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends busybox-static
+          busybox sh tests/test_dashboard_sh.sh
+
+      - name: 構文チェック
+        run: |
+          for f in dashboard.sh wifi-probe.sh tests/test_dashboard_sh.sh; do
+            dash -n "$f" && echo "OK $f"
+          done
+          python3 -m py_compile fetch_data.py && echo "OK fetch_data.py"
+
+      - name: 公開物に座標が混ざっていないか
+        # index.html と dashboard.sh は誰でも読める。
+        # 座標を直書きして push してしまう事故を止める。
+        run: |
+          ng=0
+          # 緯度経度らしい数字の並び（35.8123 のような小数4桁以上）
+          if grep -nE '\b(3[0-9]|4[0-5])\.[0-9]{4,}' index.html dashboard.sh; then
+            echo "::error::座標らしき数値が公開ファイルに入っている"
+            ng=1
+          fi
+          # CONFIG.lat / lon は null のままであること
+          if ! grep -qE 'lat:\s*null' index.html; then
+            echo "::error::index.html の CONFIG.lat が null でない"
+            ng=1
+          fi
+          if ! grep -qE 'lon:\s*null' index.html; then
+            echo "::error::index.html の CONFIG.lon が null でない"
+            ng=1
+          fi
+          [ "$ng" -eq 0 ] && echo "OK 座標は入っていない"
+          exit "$ng"

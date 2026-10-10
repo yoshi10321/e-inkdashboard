@@ -378,19 +378,29 @@ def reuse_prev_weather(out):
 
 # --- まとめ ---------------------------------------------------------
 
-def main():
-    now = datetime.now(JST)
-    target = now + timedelta(minutes=LOOKAHEAD_MIN)
-    # 日付をまたいだ場合だけ 1 になる
-    day_offset = (target.date() - now.date()).days
+def compute_dates(now):
+    """その時刻のビルドが「何日ぶんとして」作られるかを決める。
 
-    out = {
+    0 時ちょうどに作り始めるとビルドが間に合わず前日の画像が出るので、
+    23:50 に翌日ぶんを先に作っている。LOOKAHEAD_MIN 分先を「今日」とみなす。
+
+    ここは 0 時前後でしか効かないうえ、間違えても気づきにくい
+    （画面に日付が 1 日ずれて出るだけ）。テストできるように切り出してある。
+    """
+    target = now + timedelta(minutes=LOOKAHEAD_MIN)
+    return {
         "generated": now.strftime("%Y-%m-%dT%H:%M"),
         # 画面に出す日付。端末はこれを見て「本日ぶんか」を判断する
         "for_date": target.strftime("%Y-%m-%d"),
         # 天気データを何日ずらして読むか（0 なら当日、1 なら翌日）
-        "day_offset": day_offset,
+        "day_offset": (target.date() - now.date()).days,
     }
+
+
+def main():
+    now = datetime.now(JST)
+    out = compute_dates(now)
+    day_offset = out["day_offset"]
     if day_offset:
         print(f"翌日ぶん（{out['for_date']}）として作る")
     errors = {}
