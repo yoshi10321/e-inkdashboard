@@ -125,9 +125,16 @@ def fetch_weather():
     d = json.loads(get(url))
     if "current" not in d or "daily" not in d:
         raise RuntimeError("天気データの形式が想定と違う")
+    return strip_location(d)
 
-    # 応答には問い合わせたグリッド点の座標と標高が入っている。
-    # data.json は誰でも取得できるので、ここで落とす。
+
+def strip_location(d):
+    """応答に混ざっている位置情報を落とす。
+
+    Open-Meteo は問い合わせたグリッド点の座標と標高を返してくる。
+    data.json は誰でも取得できるので、公開物に入る前に必ずここを通す。
+    前回ぶんを使い回すときも、念のためもう一度通す。
+    """
     for k in ("latitude", "longitude", "elevation",
               "generationtime_ms", "utc_offset_seconds"):
         d.pop(k, None)
@@ -297,6 +304,78 @@ def fetch_nikkei():
     raise RuntimeError(" / ".join(errors))
 
 
+# --- 天気が取れなかったときの埋め合わせ -----------------------------
+#
+# 2026-10-10 10:01 のビルドで Open-Meteo が HTTP 503 を返し、3回の再試行も
+# 全部落ちた。結果、天気の枠が丸ごと「取得できませんでした」になり、
+# 次の更新まで 1 時間そのままになった。上流が数秒こけただけで画面が
+# 使い物にならなくなるのは割に合わない。
+#
+# 天気は 1 時間でそう変わらないので、直前に公開したぶんを出すほうがよい。
+# ただし「いつ時点のものか」は画面に出す。黙って古い値を見せない。
+
+# 何分前のものまで使い回してよいか
+STALE_MAX_MIN = 180
+
+# ワークフローが直前の公開ぶんを落としてくるファイル。無ければ使い回さない。
+PREV_PATH = os.environ.get("PREV_DATA", "prev_data.json")
+
+
+def reuse_prev_weather(out):
+    """直前に公開した data.json の天気で埋める。
+
+    埋めたら、その旨を説明する文字列を返す。埋めなかったら None。
+    """
+    if not os.path.exists(PREV_PATH):
+        print("  直前ぶんが無いので埋められない", file=sys.stderr)
+        return None
+    try:
+        with open(PREV_PATH, encoding="utf-8") as f:
+            prev = json.load(f)
+    except Exception as e:                      # noqa: BLE001
+        print(f"  直前ぶんを読めなかった: {e}", file=sys.stderr)
+        return None
+
+    w = prev.get("weather")
+    if not w or "daily" not in w or "current" not in w:
+        print("  直前ぶんにも天気が入っていない", file=sys.stderr)
+        return None
+
+    # 【要】日付の並びが合っているか。
+    #
+    # index.html は daily[day_offset] を「画面に出す日」として読む。
+    # 23:50 のビルドは翌日ぶん（day_offset=1）、0時すぎは当日ぶん（0）で、
+    # 同じ for_date でも配列の起点が違う。generated の新しさだけで判断すると
+    # 日付をまたいだ瞬間に 1 日ずれた予報を出すことになる。
+    # そこで配列そのものを引いて、狙った日付と一致するかを確かめる。
+    days = (w.get("daily") or {}).get("time") or []
+    off = out["day_offset"]
+    if off >= len(days) or days[off] != out["for_date"]:
+        got = days[off] if off < len(days) else "（範囲外）"
+        print(f"  直前ぶんは日付が合わない（daily[{off}]={got} / "
+              f"欲しいのは {out['for_date']}）", file=sys.stderr)
+        return None
+
+    # 現在の気温などは古くなる。どこまで許すかを決めておく。
+    as_of = prev.get("generated")
+    try:
+        age = (datetime.now(JST)
+               - datetime.strptime(as_of, "%Y-%m-%dT%H:%M").replace(tzinfo=JST))
+        age_min = int(age.total_seconds() // 60)
+    except Exception:                           # noqa: BLE001
+        print(f"  直前ぶんの generated を読めない（{as_of}）", file=sys.stderr)
+        return None
+    if age_min < 0 or age_min > STALE_MAX_MIN:
+        print(f"  直前ぶんが古すぎる（{age_min}分前）", file=sys.stderr)
+        return None
+
+    # 公開物に座標を混ぜない。前回ぶんも通す。
+    out["weather"] = strip_location(w)
+    out["weather_as_of"] = as_of
+    print(f"  天気は直前ぶん（{as_of} / {age_min}分前）で埋めた")
+    return f"直前ぶん({as_of})で代用"
+
+
 # --- まとめ ---------------------------------------------------------
 
 def main():
@@ -332,6 +411,14 @@ def main():
             # Actions のログは後から読みにくいので、失敗理由も公開物に残す
             errors[key] = str(e)[:600]
             failed.append(label)
+
+    # 天気が取れなかったときは、直前に公開したぶんで埋める。
+    if out.get("weather") is None:
+        note = reuse_prev_weather(out)
+        if note:
+            errors["weather"] = f"{note} / {errors.get('weather', '')}"[:600]
+            if "天気" in failed:
+                failed.remove("天気")
 
     if errors:
         out["errors"] = errors

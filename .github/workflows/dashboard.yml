@@ -124,6 +124,23 @@ jobs:
           npm install --no-fund --no-audit playwright
           npx playwright install --with-deps chromium
 
+      - name: 直前に公開した data.json を取っておく
+        # 天気の取得が失敗したときに、これで埋める。
+        # 2026-10-10 10:01 のビルドで Open-Meteo が 503 を返し、天気の枠が
+        # 1 時間ぶん「取得できませんでした」になった。上流が数秒こけただけで
+        # 画面が使い物にならなくなるのは割に合わない。
+        # 取れなくてもビルドは続ける（その場合は従来どおり失敗表示になる）。
+        continue-on-error: true
+        run: |
+          curl -fsS --max-time 20 \
+            "https://yoshi10321.github.io/e-inkdashboard/data.json?cb=$(date +%s)" \
+            -o prev_data.json || rm -f prev_data.json
+          if [ -f prev_data.json ]; then
+            echo "直前ぶんを取得した（$(wc -c < prev_data.json) bytes）"
+          else
+            echo "::notice::直前ぶんを取得できなかった。天気が失敗しても埋められない"
+          fi
+
       - name: 表示するデータを取得する
         # ブラウザから直接 API を叩くと CORS や相手側の制限で失敗することがあるため、
         # ここ（サーバー側）でまとめて取得して data.json に書き出す。

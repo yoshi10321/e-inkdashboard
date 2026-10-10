@@ -530,6 +530,16 @@ function renderHeader(apiIso) {
   el("updLine").innerHTML = "";
 }
 
+/* 天気を直前のビルドぶんで埋めたときだけ、その時刻を出す。
+   黙って古い値を見せないため。普段は出ない。 */
+function showWeatherAsOf(iso) {
+  var parts = String(iso).split("T");
+  var hm = String(parts[1] || "").split(":");
+  if (hm.length < 2) { return; }
+  el("updLine").innerHTML = "天気 " + pad2(Number(hm[0])) + ":"
+                          + pad2(Number(hm[1])) + " 時点";
+}
+
 /* --- 天気（Open-Meteo） ------------------------------------------ */
 function loadWeather() {
   /* 座標を持っていないので直接は取れない。data.json 経由が本筋。 */
@@ -827,7 +837,11 @@ function start() {
     /* 日付は data.json の generated（日本時間で書かれている）を使う。
        画像を作っているのは GitHub Actions のランナーで、そちらの時計は UTC。
        ブラウザ任せにすると日本時間の 0時〜9時のあいだ 1日前の日付が出る。 */
-    if (d.generated) { renderHeader(d.generated); }
+    /* 画面に出す日付は for_date。23:50 のビルドは「翌日ぶん」として作るので、
+       generated（作った時刻＝まだ当日）を使うと 1 日前の日付が出る。
+       天気が取れていれば renderWeather が同じものを入れ直すが、
+       天気が null のときはここだけが頼りになる。 */
+    if (d.for_date || d.generated) { renderHeader(d.for_date || d.generated); }
 
     /* 個別に欠けている場合は、その項目だけ直接取得に切り替える */
     if (d.weather) {
@@ -835,6 +849,10 @@ function start() {
     } else { loadWeather(); }
     if (d.fx)      { renderSeries("fx", d.fx, 2); } else { loadFx(); }
     if (d.nikkei)  { renderSeries("nk", d.nikkei, 0); } else { loadNikkei(); }
+
+    /* 天気を直前ぶんで埋めた場合は、いつ時点かを出す。
+       renderWeather が renderHeader 経由で updLine を消すので、必ず後に置く。 */
+    if (d.weather && d.weather_as_of) { showWeatherAsOf(d.weather_as_of); }
   }, startWithLiveApis, 8000);
 }
 
