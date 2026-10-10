@@ -72,18 +72,6 @@ echo "$*" >> "$STATEDIR/lipc_set.log"
 exit 0
 EOF
 
-cat > "$TMP/bin/ifconfig" <<'EOF'
-#!/bin/sh
-# IP は cmState が CONNECTED になってから付く。
-# 「CONNECTED になった瞬間はまだ通信できない」を再現するため、
-# IP_DELAY 回ぶん遅らせられるようにしてある。
-if [ "${SCENARIO:-ok}" = "needs_ui" ] && [ ! -f "$STATEDIR/ui_up" ]; then exit 0; fi
-n=$(cat "$STATEDIR/polls" 2>/dev/null || echo 0)
-if [ "$n" -ge $(( 2 + ${IP_DELAY:-0} )) ]; then
-    echo "          inet addr:192.168.10.134  Bcast:192.168.10.255"
-fi
-EOF
-
 cat > "$TMP/bin/stop" <<'EOF'
 #!/bin/sh
 rm -f "$STATEDIR/ui_up"
@@ -97,18 +85,52 @@ rm -f "$STATEDIR/polls"
 echo start >> "$STATEDIR/fw.log"
 EOF
 
-for c in initctl eips wget od gasgauge-info; do
+for c in initctl eips gasgauge-info; do
     printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/$c"
 done
-
-# sleep も潰す。
-# 接続待ちは 2 秒 × 30 回、UI の起動待ちは 15 秒ある。実時間で待つと
-# テストに数分かかり、誰も回さなくなる。確かめたいのは待ち時間ではなく
-# 「何回ポーリングしてどう判断するか」なので、待ちだけ取り除く。
-printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/sleep"
 chmod +x "$TMP/bin"/*
 PATH="$TMP/bin:$PATH"
 export PATH
+
+# --- applet と名前がぶつかるものは、PATH ではなく関数で差し替える ----
+#
+# ifconfig / wget / sleep / od は **busybox の applet** なので、
+# busybox sh は PATH を見ずに自分の中身を呼ぶ。端末の /bin/sh は busybox
+# なので、PATH にスタブを置いただけでは本物が動いてしまう。
+# （CI が 5 分で打ち切られて気づいた。本物の sleep 2 が走っていた）
+#
+# 関数は applet より先に引かれる。コマンド置換の中でも効く。
+# 一方、関数名にハイフンは使えないので（dash も busybox も構文エラー）、
+# lipc-get-prop などは PATH のスタブのままにしてある。
+
+# IP は cmState が CONNECTED になってから付く。
+# 「CONNECTED になった瞬間はまだ通信できない」を再現するため、
+# IP_DELAY 回ぶん遅らせられるようにしてある。
+IFCONFIG_SILENT=0
+ifconfig() {
+    [ "$IFCONFIG_SILENT" = "1" ] && return 0
+    [ "$SCENARIO" = "needs_ui" ] && [ ! -f "$STATEDIR/ui_up" ] && return 0
+    _n=$(cat "$STATEDIR/polls" 2>/dev/null || echo 0)
+    if [ "$_n" -ge $(( 2 + IP_DELAY )) ]; then
+        echo "          inet addr:192.168.10.134  Bcast:192.168.10.255"
+    fi
+    return 0
+}
+
+# 返す本文は WGET_BODY で決める。空なら失敗扱い。
+WGET_BODY=""
+wget() {
+    [ -n "$WGET_BODY" ] || return 1
+    printf '%s' "$WGET_BODY"
+}
+
+od() { return 0; }
+
+# 待ちを取り除く。
+# 接続待ちは 2 秒 × 30 回、UI の起動待ちは 15 秒ある。実時間で待つと
+# テストに数分かかり、誰も回さなくなる。確かめたいのは待ち時間ではなく
+# 「何回ポーリングしてどう判断するか」。
+sleep() { :; }
 
 reset_state() {
     rm -f "$STATEDIR"/* 2>/dev/null
@@ -209,26 +231,13 @@ if wait_online; then ok "CONNECTED かつ IP ありなら成功"; else ng "CONNE
 
 reset_state
 # CONNECTED にはなるが IP がいつまでも付かない場合
-cat > "$TMP/bin/ifconfig" <<'EOF'
-#!/bin/sh
-exit 0
-EOF
-chmod +x "$TMP/bin/ifconfig"
+IFCONFIG_SILENT=1
 if wait_online; then
     ng "IP が無いうちは成功にしない" "成功してしまった（CONNECTED だけで通している）"
 else
     ok "IP が無いうちは成功にしない"
 fi
-# 戻す
-cat > "$TMP/bin/ifconfig" <<'EOF'
-#!/bin/sh
-if [ "${SCENARIO:-ok}" = "needs_ui" ] && [ ! -f "$STATEDIR/ui_up" ]; then exit 0; fi
-n=$(cat "$STATEDIR/polls" 2>/dev/null || echo 0)
-if [ "$n" -ge $(( 2 + ${IP_DELAY:-0} )) ]; then
-    echo "          inet addr:192.168.10.134  Bcast:192.168.10.255"
-fi
-EOF
-chmod +x "$TMP/bin/ifconfig"
+IFCONFIG_SILENT=0
 
 # --- 1 周ぶんの通信 -------------------------------------------------
 #
@@ -328,13 +337,7 @@ TODAY=$(date '+%Y-%m-%d')
 YESTERDAY=$(date -d yesterday '+%Y-%m-%d' 2>/dev/null \
             || date -v-1d '+%Y-%m-%d' 2>/dev/null || echo "2000-01-01")
 
-fake_wget() {   # 本文を返す wget に差し替える
-    cat > "$TMP/bin/wget" <<EOF
-#!/bin/sh
-printf '%s' '$1'
-EOF
-    chmod +x "$TMP/bin/wget"
-}
+fake_wget() { WGET_BODY=$1; }
 
 fake_wget "{\"generated\":\"${TODAY}T10:00\",\"for_date\":\"${TODAY}\"}"
 log_image_age
