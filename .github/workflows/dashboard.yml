@@ -149,6 +149,10 @@ jobs:
           # 座標はリポジトリに置かない。Secrets から渡す。
           DASH_LAT: ${{ secrets.DASH_LAT }}
           DASH_LON: ${{ secrets.DASH_LON }}
+          # 気象庁の予報区。OFFICE は府県（週間予報）、AREA は一次細分区域
+          # （3日予報）。座標と同じく Secrets から渡す。
+          DASH_JMA_OFFICE: ${{ secrets.DASH_JMA_OFFICE }}
+          DASH_JMA_AREA: ${{ secrets.DASH_JMA_AREA }}
         run: python3 fetch_data.py
 
       - name: ローカルサーバーを起動

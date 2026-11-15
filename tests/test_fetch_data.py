@@ -263,6 +263,297 @@ class TestReusePrevWeather(unittest.TestCase):
         self.assertIsNone(fd.reuse_prev_weather(o))
 
 
+class TestJmaWmo(unittest.TestCase):
+    """気象庁の天気コード → WMO コードの変換。
+
+    index.html はこの WMO コードでアイコンを分岐している。
+    変換先が index.html の描けない値になると、既定の雲アイコンに落ちて
+    画面上は「それらしく」出てしまうので、気づきにくい。
+    """
+
+    # index.html の iconHtml / weatherLabel が実際に分岐している値だけ
+    DRAWABLE = {0, 1, 2, 3, 45, 61, 71, 95}
+
+    def test_全部のコードが描ける値になる(self):
+        bad = {c: w for c, w in fd.JMA_TO_WMO.items()
+               if w not in self.DRAWABLE}
+        self.assertEqual(bad, {}, f"index.html が描けない値がある: {bad}")
+
+    def test_表の件数(self):
+        # 気象庁のページから機械生成した全件。欠けたら気づけるように固定する
+        self.assertEqual(len(fd.JMA_TO_WMO), 118)
+
+    def test_代表的なところ(self):
+        for code, want, why in [
+            (100, 0,  "晴"),
+            (101, 2,  "晴時々曇"),
+            (111, 2,  "晴後曇"),
+            (200, 3,  "曇"),
+            (201, 2,  "曇時々晴"),
+            (209, 45, "霧"),
+            (300, 61, "雨"),
+            (400, 71, "雪"),
+            (350, 95, "雨で雷を伴う"),
+            (302, 61, "雨時々止む"),
+            (303, 71, "雨時々雪 → 代表は雪"),
+        ]:
+            self.assertEqual(fd._jma_wmo(code), want, f"{code} {why}")
+
+    def test_代表コードを和名より優先する(self):
+        # 123「晴山沿い雷雨」と 124「晴山沿い雪」は、和名に雷雨や雪が
+        # 入っているが気象庁自身の代表コードは 100（晴）。
+        # 平野部の草加で雷雨アイコンを出すのは実態に合わない。
+        self.assertEqual(fd._jma_wmo(123), 1)
+        self.assertEqual(fd._jma_wmo(124), 1)
+
+    def test_未知のコードでも落とさない(self):
+        # 気象庁がコードを足しても、画面が壊れるよりは大まかに出す
+        self.assertEqual(fd._jma_wmo(199), 1)
+        self.assertEqual(fd._jma_wmo(299), 3)
+        self.assertEqual(fd._jma_wmo(399), 61)
+        self.assertEqual(fd._jma_wmo(499), 71)
+        self.assertIn(fd._jma_wmo(999), self.DRAWABLE)
+
+
+def jma_payload():
+    """気象庁 bosai の応答を、実物の構造どおりに作る。
+
+    2026-11-15 17:00 発表の埼玉県（110000）の実物から形を取った。
+      d[0] 短期: [0]天気コード [1]降水確率(6時間ごと) [2]気温(アメダス)
+      d[1] 週間: [0]天気コード・降水確率 [1]気温
+    短期の区域は一次細分（南部 110010）、週間は府県（110000）。
+    """
+    return [
+        {
+            "publishingOffice": "熊谷地方気象台",
+            "reportDatetime": "2026-11-15T17:00:00+09:00",
+            "timeSeries": [
+                {
+                    "timeDefines": ["2026-11-15T17:00:00+09:00",
+                                    "2026-11-16T00:00:00+09:00",
+                                    "2026-11-17T00:00:00+09:00"],
+                    "areas": [
+                        {"area": {"name": "北部", "code": "110020"},
+                         "weatherCodes": ["999", "999", "999"]},
+                        {"area": {"name": "南部", "code": "110010"},
+                         "weatherCodes": ["101", "200", "300"]},
+                    ],
+                },
+                {
+                    "timeDefines": ["2026-11-15T18:00:00+09:00",
+                                    "2026-11-16T00:00:00+09:00",
+                                    "2026-11-16T06:00:00+09:00",
+                                    "2026-11-16T12:00:00+09:00",
+                                    "2026-11-16T18:00:00+09:00"],
+                    "areas": [
+                        {"area": {"name": "南部", "code": "110010"},
+                         "pops": ["10", "0", "20", "60", "30"]},
+                    ],
+                },
+            ],
+        },
+        {
+            "timeSeries": [
+                {
+                    "timeDefines": [f"2026-11-{d}T00:00:00+09:00"
+                                    for d in range(16, 23)],
+                    "areas": [
+                        {"area": {"name": "埼玉県", "code": "110000"},
+                         "weatherCodes": ["200", "300", "400", "100",
+                                          "101", "200", "300"],
+                         "pops": ["90", "90", "90", "10", "20", "30", "40"]},
+                    ],
+                },
+            ],
+        },
+    ]
+
+
+class TestFetchJma(unittest.TestCase):
+    """気象庁の応答から {日付: 値} を作るところ。
+
+    一番こわいのは位置（index）で取ってしまうこと。気象庁の発表は
+    05/11/17 時の 3 回あり、発表時刻で timeDefines の起点が変わる。
+    位置で取ると発表をまたいだ瞬間に 1 日ずれた予報を出す。
+    """
+
+    def setUp(self):
+        self.payload = jma_payload()
+        self._orig_get = fd.get
+        fd.get = lambda url: json.dumps(self.payload).encode()
+
+    def tearDown(self):
+        fd.get = self._orig_get
+
+    def test_日付で引ける(self):
+        j = fd.fetch_jma("110000", "110010")
+        self.assertEqual(j["weather_codes"]["2026-11-15"], 2)    # 101 晴時々曇
+        self.assertEqual(j["weather_codes"]["2026-11-17"], 61)   # 300 雨
+        self.assertEqual(j["report"], "2026-11-15T17:00")
+
+    def test_短期が週間より優先される(self):
+        # 11/16 は短期では 200（曇→WMO 3）、週間でも 200。
+        # 11/17 は短期 300（雨→61）、週間 300。どちらも短期が勝つ形。
+        # 区域が細かく発表も新しいほうを採る。
+        self.payload[1]["timeSeries"][0]["areas"][0]["weatherCodes"][0] = "400"
+        j = fd.fetch_jma("110000", "110010")
+        self.assertEqual(j["weather_codes"]["2026-11-16"], 3,
+                         "週間（雪）ではなく短期（曇）を採るべき")
+
+    def test_週間しかない日も取れる(self):
+        j = fd.fetch_jma("110000", "110010")
+        self.assertEqual(j["weather_codes"]["2026-11-22"], 61)   # 300 雨
+        self.assertEqual(j["pops"]["2026-11-22"], 40)
+
+    def test_6時間ごとの降水確率はその日の最大を採る(self):
+        j = fd.fetch_jma("110000", "110010")
+        # 11/16 は 0 / 20 / 60 / 30 → 60
+        self.assertEqual(j["pops"]["2026-11-16"], 60)
+        # 11/15 は 18時の 10 だけ
+        self.assertEqual(j["pops"]["2026-11-15"], 10)
+
+    def test_区域を取り違えない(self):
+        # 北部と南部で別の天気にして、指定した区域の値が出ることを見る。
+        # 黙って隣の地域の予報を出すのが一番たちが悪い。
+        self.payload[0]["timeSeries"][0]["areas"][0]["weatherCodes"] = \
+            ["400", "400", "400"]          # 北部は雪
+        j_south = fd.fetch_jma("110000", "110010")
+        j_north = fd.fetch_jma("110000", "110020")
+        self.assertEqual(j_south["weather_codes"]["2026-11-15"], 2)   # 晴時々曇
+        self.assertEqual(j_north["weather_codes"]["2026-11-15"], 71)  # 雪
+
+    def test_存在しない区域なら短期は空になる(self):
+        # 週間（府県）は取れても、短期（一次細分）は入らない
+        j = fd.fetch_jma("110000", "119999")
+        self.assertNotIn("2026-11-15", j["weather_codes"])
+        self.assertIn("2026-11-16", j["weather_codes"])   # 週間ぶんは残る
+
+    def test_1日も取れなければ失敗させる(self):
+        # 府県コードごと外す。黙って空の予報を返させない。
+        with self.assertRaises(RuntimeError) as cm:
+            fd.fetch_jma("999999", "119999")
+        self.assertIn("999999", str(cm.exception))
+
+    def test_配列でない応答(self):
+        fd.get = lambda url: b'{"error": "nope"}'
+        with self.assertRaises(RuntimeError):
+            fd.fetch_jma("110000", "110010")
+
+
+class TestMergeJma(unittest.TestCase):
+    """Open-Meteo のブロックに上書きするところ。
+
+    上書きするのは天気コードと降水確率だけ。気温・日の出入は
+    Open-Meteo のまま残らなければならない（週間の気温は気象庁だと
+    熊谷のぶんしか公開されておらず、草加とは内陸ぶんずれるため）。
+    """
+
+    def setUp(self):
+        self._orig_get = fd.get
+        fd.get = lambda url: json.dumps(jma_payload()).encode()
+        os.environ["DASH_JMA_OFFICE"] = "110000"
+        os.environ["DASH_JMA_AREA"] = "110010"
+
+    def tearDown(self):
+        fd.get = self._orig_get
+        os.environ.pop("DASH_JMA_OFFICE", None)
+        os.environ.pop("DASH_JMA_AREA", None)
+
+    def out(self):
+        return {"for_date": "2026-11-15", "day_offset": 0,
+                "weather": make_weather(datetime(2026, 11, 15).date())}
+
+    def test_天気と降水確率だけ差し替わる(self):
+        o = self.out()
+        before_max = list(o["weather"]["daily"]["temperature_2m_max"])
+        before_sun = list(o["weather"]["daily"]["sunrise"])
+        note = fd.merge_jma(o)
+        self.assertIn("気象庁", note)
+        dd = o["weather"]["daily"]
+        self.assertEqual(dd["weather_code"][0], 2)        # 11/15 → 101
+        self.assertEqual(dd["precipitation_probability_max"][1], 60)
+        self.assertEqual(dd["temperature_2m_max"], before_max, "気温は触らない")
+        self.assertEqual(dd["sunrise"], before_sun, "日の出入は触らない")
+
+    def test_今日のアイコンも差し替わる(self):
+        o = self.out()
+        # 雛形の current は 2 なので、そのままだと上書きしなくても通る。
+        # 別の値にしてから呼ぶ。
+        o["weather"]["current"]["weather_code"] = 61
+        fd.merge_jma(o)
+        self.assertEqual(o["weather"]["current"]["weather_code"], 2,
+                         "画面の大きいアイコンが気象庁の値になっていない")
+
+    def test_出どころを記録する(self):
+        o = self.out()
+        fd.merge_jma(o)
+        self.assertEqual(o["weather_source"], "気象庁")
+        self.assertEqual(o["weather_report"], "2026-11-15T17:00")
+
+    def test_予報区が未設定なら失敗させる(self):
+        os.environ.pop("DASH_JMA_OFFICE")
+        o = self.out()
+        with self.assertRaises(RuntimeError) as cm:
+            fd.merge_jma(o)
+        self.assertIn("DASH_JMA_OFFICE", str(cm.exception))
+
+    def test_天気が無ければ何もしない(self):
+        o = {"for_date": "2026-11-15", "day_offset": 0, "weather": None}
+        self.assertIsNone(fd.merge_jma(o))
+
+    def test_気象庁に無い日はOpenMeteoのまま残る(self):
+        o = self.out()
+        dd = o["weather"]["daily"]
+        # 9日目（11/23）は気象庁の週間に無い
+        dd["time"].append("2026-11-23")
+        for k in ("weather_code", "temperature_2m_max", "temperature_2m_min",
+                  "precipitation_probability_max", "sunrise", "sunset"):
+            dd[k].append(dd[k][-1])
+        keep = dd["weather_code"][-1]
+        fd.merge_jma(o)
+        self.assertEqual(dd["weather_code"][-1], keep)
+
+
+class TestReuseCarriesSource(unittest.TestCase):
+    """直前ぶんで埋めたとき、出どころも引き継ぐ。
+
+    引き継がないと、気象庁の予報を出しているのに「Open-Meteo」と
+    記録されて、後から原因を追えなくなる。
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, "prev.json")
+        self._orig_path, self._orig_dt = fd.PREV_PATH, fd.datetime
+        fd.PREV_PATH = self.path
+        self.now = datetime(2026, 11, 15, 10, 25, tzinfo=JST)
+        test = self
+
+        class FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return test.now if tz is None else test.now.astimezone(tz)
+        fd.datetime = FixedDatetime
+
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump({"generated": "2026-11-15T10:00",
+                       "for_date": "2026-11-15", "day_offset": 0,
+                       "weather": make_weather(self.now.date()),
+                       "weather_source": "気象庁",
+                       "weather_report": "2026-11-15T05:00"}, f,
+                      ensure_ascii=False)
+
+    def tearDown(self):
+        fd.PREV_PATH, fd.datetime = self._orig_path, self._orig_dt
+
+    def test_出どころを引き継ぐ(self):
+        o = {"for_date": "2026-11-15", "day_offset": 0, "weather": None,
+             "weather_source": "Open-Meteo"}
+        self.assertIsNotNone(fd.reuse_prev_weather(o))
+        self.assertEqual(o["weather_source"], "気象庁")
+        self.assertEqual(o["weather_report"], "2026-11-15T05:00")
+
+
 class TestParseDateValueCsv(unittest.TestCase):
     """「日付,値」の CSV の解析。日経と FRED で使う。"""
 
