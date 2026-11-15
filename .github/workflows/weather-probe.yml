@@ -60,34 +60,36 @@ jobs:
           import re, json
           html = open('/tmp/page.html', encoding='utf-8', errors='replace').read()
 
-          # 表は外部 JS ではなく HTML 本体に直接書かれている。
-          # "100":["100.svg","500.svg","100","晴",...] のような並びを探す。
-          m = re.search(r'\{\s*"100"\s*:\s*\[.*?\n\s*\}', html, re.S)
+          # 表は HTML 本体の中に R.TELOPS={100:[...],101:[...]} の形である。
+          # **キーが引用符なしの整数**なので、そのままでは JSON にならない。
+          m = re.search(r'TELOPS\s*=\s*\{(.*?)\}\s*;', html, re.S)
           if not m:
-              i = html.find('"100"')
-              print(f'::notice::"100" の出現位置={i}')
-              if i >= 0:
-                  print("::notice::前後=" + html[max(0, i-200):i+650]
-                        .replace('\n', '⏎')[:850])
+              print("::notice::TELOPS が見つからない")
               raise SystemExit(0)
+          body = m.group(1)
+          print(f"::notice::TELOPS の塊 {len(body)}B")
 
-          blob = m.group(0)
-          print(f"::notice::表らしき塊 {len(blob)}B")
-          try:
-              tbl = json.loads(blob)
-          except Exception as e:
-              print(f"::notice::そのままでは JSON でない: {e}")
-              print("::notice::先頭=" + blob[:800].replace('\n', '⏎'))
-              raise SystemExit(0)
+          # 値は 5 要素: [昼svg, 夜svg, 代表コード, 和名, 英名]
+          ent = re.findall(r'(\d+)\s*:\s*\[([^\]]*)\]', body)
+          print(f"::notice::telop件数={len(ent)}")
 
-          print(f"::notice::telop件数={len(tbl)}")
-          # 各値の形も見る（何番目が天気文で、何番目がアイコンか）
-          print(f"::notice::例 100={tbl.get('100')} / 114={tbl.get('114')}")
-          out = {k: tbl[k] for k in sorted(tbl, key=int)}
-          s = json.dumps(out, ensure_ascii=False, separators=(',', ':'))
-          print(f"::notice::全長={len(s)}")
-          for i in range(0, len(s), 850):
-              print(f"::notice::TELOP[{i//850}] {s[i:i+850]}")
+          tbl = {}
+          for code, vals in ent:
+              parts = re.findall(r'"((?:[^"\\]|\\.)*)"', vals)
+              parts = [p.encode().decode('unicode_escape')
+                       .encode('latin1', 'ignore').decode('utf-8', 'ignore')
+                       if '\\u' in p else p for p in parts]
+              tbl[code] = parts
+
+          print(f"::notice::例 100={tbl.get('100')} / 102={tbl.get('102')}")
+
+          # 欲しいのは「コード → 代表コード」と、確認用の和名だけ
+          pairs = [f"{c}:{v[2]}:{v[3]}" for c, v in
+                   sorted(tbl.items(), key=lambda x: int(x[0])) if len(v) > 3]
+          s = " ".join(pairs)
+          print(f"::notice::全長={len(s)} 代表の種類={sorted({v[2] for v in tbl.values() if len(v)>2})}")
+          for i in range(0, len(s), 820):
+              print(f"::notice::TELOP[{i//820}] {s[i:i+820]}")
           PY
 
       - name: 気象庁の生データをそのまま出す
