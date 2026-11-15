@@ -621,6 +621,12 @@ def main():
         try:
             note = merge_jma(out)
             print(f"  OK {note}")
+            # 成功したことも残す。
+            # 警告が出ないことは成功の証明にならない（天気そのものが
+            # 取れなければ上書きは丸ごと飛ばされ、やはり警告は出ない）。
+            # この環境からは公開中の data.json を読めないので、
+            # どちらの予報が出ているかはここでしか確かめられない。
+            print(f"::notice::天気の出どころ: {note}")
         except Exception as e:          # noqa: BLE001
             print(f"  失敗: {e}", file=sys.stderr)
             print(f"::warning::気象庁から取れなかったので Open-Meteo の"
