@@ -1,0 +1,132 @@
+name: Weather probe
+
+# 天気の取得元を変えるかどうかを決めるための、使い捨ての調査用ワークフロー。
+# 判断がついたら消す。
+#
+# 確かめたいこと:
+#   1. 気象庁の bosai JSON がランナーから取れるか
+#      （日経の件で Stooq と Yahoo はランナーから弾かれた前例がある）
+#   2. その中身の構造（非公式エンドポイントなので実物で確認する）
+#   3. Open-Meteo の best_match と models=jma_seamless で予報が変わるか
+#      → 変わるなら「気象庁モデルを指定していないこと」が食い違いの原因
+#
+# 結果は ::notice:: で出す。この環境からは Actions のログ本体が読めないが、
+# アノテーションは gh api で読めるため。
+#
+# 座標は Secrets から渡す。気象庁側は府県コード 110000（埼玉県）を使う。
+# 画面にはすでに「草加」が出ているので、県単位のコードで精度は増えない。
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: 気象庁 bosai が届くか / 中身は何か
+        env:
+          AREA: "110000"
+        run: |
+          set +e
+          for p in forecast/data/forecast overview_forecast/data/forecast; do
+            url="https://www.jma.go.jp/bosai/${p}/${AREA}.json"
+            code=$(curl -s -o "/tmp/$(basename $p).json" -w "%{http_code}" \
+                   --max-time 25 -A "Mozilla/5.0" "$url")
+            size=$(wc -c < "/tmp/$(basename $p).json" 2>/dev/null || echo 0)
+            echo "::notice::JMA $p → HTTP $code / ${size} bytes"
+          done
+          # 地域の一覧も取る。草加がどの区域に入るかを確かめるため。
+          curl -s -o /tmp/area.json --max-time 25 -A "Mozilla/5.0" \
+            "https://www.jma.go.jp/bosai/common/const/area.json"
+          echo "::notice::JMA area.json → $(wc -c < /tmp/area.json) bytes"
+
+      - name: 気象庁の中身を要約する
+        run: |
+          python3 - <<'PY'
+          import json, os
+
+          def note(s):
+              s = str(s).replace('\n', ' ')[:900]
+              print(f"::notice::{s}")
+
+          try:
+              d = json.load(open('/tmp/forecast.json', encoding='utf-8'))
+          except Exception as e:
+              note(f"forecast.json を読めない: {e}")
+              raise SystemExit(0)
+
+          note(f"要素数={len(d)}  発表={d[0].get('publishingOffice')} "
+               f"{d[0].get('reportDatetime')}")
+
+          for i, blk in enumerate(d):
+              for j, ts in enumerate(blk.get('timeSeries', [])):
+                  keys = sorted({k for a in ts['areas'] for k in a if k != 'area'})
+                  names = [a['area']['name'] + ':' + a['area']['code']
+                           for a in ts['areas']][:6]
+                  note(f"[{i}][{j}] 時刻数={len(ts['timeDefines'])} "
+                       f"項目={keys} 区域={names}")
+                  note(f"[{i}][{j}] timeDefines={ts['timeDefines'][:4]}")
+
+          # 埼玉県南部（草加が属する一次細分区域）を名前で探して中身を出す
+          for i, blk in enumerate(d):
+              for j, ts in enumerate(blk.get('timeSeries', [])):
+                  for a in ts['areas']:
+                      if '南部' in a['area']['name'] or '埼玉' in a['area']['name']:
+                          vals = {k: v for k, v in a.items() if k != 'area'}
+                          note(f"[{i}][{j}] {a['area']['name']}"
+                               f"({a['area']['code']}) {vals}")
+                          break
+
+          tavg = d[1].get('tempAverage') if len(d) > 1 else None
+          note(f"週間の平年値キーの有無: {bool(tavg)}")
+          PY
+
+      - name: Open-Meteo を best_match と jma_seamless で比べる
+        env:
+          DASH_LAT: ${{ secrets.DASH_LAT }}
+          DASH_LON: ${{ secrets.DASH_LON }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+
+          LAT = os.environ['DASH_LAT']; LON = os.environ['DASH_LON']
+
+          def note(s):
+              print(f"::notice::{str(s).replace(chr(10),' ')[:900]}")
+
+          def get(models):
+              u = ("https://api.open-meteo.com/v1/forecast"
+                   f"?latitude={LAT}&longitude={LON}"
+                   "&daily=weather_code,temperature_2m_max,temperature_2m_min,"
+                   "precipitation_probability_max"
+                   "&timezone=Asia%2FTokyo&forecast_days=8")
+              if models:
+                  u += f"&models={models}"
+              with urllib.request.urlopen(u, timeout=30) as r:
+                  return json.load(r)
+
+          out = {}
+          for name, m in (("best_match", None), ("jma_seamless", "jma_seamless")):
+              try:
+                  d = get(m)
+                  dd = d['daily']
+                  out[name] = dd
+                  note(f"{name} 日付={dd['time'][:8]}")
+                  note(f"{name} 天気={dd['weather_code'][:8]}")
+                  note(f"{name} 最高={dd['temperature_2m_max'][:8]}")
+                  note(f"{name} 最低={dd['temperature_2m_min'][:8]}")
+                  note(f"{name} 降水={dd['precipitation_probability_max'][:8]}")
+              except Exception as e:
+                  note(f"{name} 失敗: {type(e).__name__} {e}")
+
+          if len(out) == 2:
+              a, b = out['best_match'], out['jma_seamless']
+              diff = [i for i in range(min(len(a['time']), len(b['time'])))
+                      if a['weather_code'][i] != b['weather_code'][i]]
+              note(f"天気コードが違う日のindex={diff}")
+              dt = [round((a['temperature_2m_max'][i] or 0)
+                          - (b['temperature_2m_max'][i] or 0), 1)
+                    for i in range(min(len(a['time']), len(b['time'])))]
+              note(f"最高気温の差(best-jma)={dt}")
+          PY
