@@ -24,6 +24,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 6
     steps:
+      # 最後の段で fetch_data を import するので、リポジトリが要る
+      - uses: actions/checkout@v4
+
       - name: 気象庁 bosai が届くか / 中身は何か
         env:
           AREA: "110000"
