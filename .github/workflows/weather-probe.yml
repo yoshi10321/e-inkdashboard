@@ -1,20 +1,17 @@
 name: Weather probe
 
-# 天気の取得元を変えるかどうかを決めるための、使い捨ての調査用ワークフロー。
-# 判断がついたら消す。
+# 天気の取得元を変えるための調査。確認が済んだら消す。
 #
-# 確かめたいこと:
-#   1. 気象庁の bosai JSON がランナーから取れるか
-#      （日経の件で Stooq と Yahoo はランナーから弾かれた前例がある）
-#   2. その中身の構造（非公式エンドポイントなので実物で確認する）
-#   3. Open-Meteo の best_match と models=jma_seamless で予報が変わるか
-#      → 変わるなら「気象庁モデルを指定していないこと」が食い違いの原因
+# 済んだこと（2026-11-15）:
+#   - 気象庁 bosai はランナーから取れる（HTTP 200）
+#   - 応答の構造と天気コードの対応表（118件）を実物から取得
+#   - Open-Meteo の best_match は気象庁と食い違う。
+#     models=jma_seamless は降水確率を返さない（8日ぶん全部 None）
+#   - 実装を本物に当てて、天気8日・降水確率8日の上書きを確認。気温は不変
 #
-# 結果は ::notice:: で出す。この環境からは Actions のログ本体が読めないが、
-# アノテーションは gh api で読めるため。
-#
-# 座標は Secrets から渡す。気象庁側は府県コード 110000（埼玉県）を使う。
-# 画面にはすでに「草加」が出ているので、県単位のコードで精度は増えない。
+# 残り: 草加がどの一次細分区域に入るか。
+# アノテーションは 30 件が上限で、前回は後の段に押し出された。
+# 確認済みの段は落として、残りだけにする。
 
 on:
   workflow_dispatch:
@@ -22,241 +19,35 @@ on:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 5
     steps:
-      # 最後の段で fetch_data を import するので、リポジトリが要る
-      - uses: actions/checkout@v4
-
-      - name: 気象庁 bosai が届くか / 中身は何か
-        env:
-          AREA: "110000"
-        run: |
-          set +e
-          # 保存先の名前は URL から作らないこと。
-          # 前回 basename を使ったら forecast/data/forecast と
-          # overview_forecast/data/forecast がどちらも forecast.json になり、
-          # 404 の HTML が本体を上書きして中身が読めなくなった。
-          probe() {   # probe <保存名> <URL>
-            code=$(curl -s -o "/tmp/$1.json" -w "%{http_code}" \
-                   --max-time 25 -A "Mozilla/5.0" "$2")
-            echo "::notice::JMA $1 → HTTP $code / $(wc -c < /tmp/$1.json) bytes"
-          }
-          probe forecast  "https://www.jma.go.jp/bosai/forecast/data/forecast/${AREA}.json"
-          probe overview  "https://www.jma.go.jp/bosai/forecast/data/overview_forecast/${AREA}.json"
-          # 地域の一覧も取る。草加がどの区域に入るかを確かめるため。
-          curl -s -o /tmp/area.json --max-time 25 -A "Mozilla/5.0" \
-            "https://www.jma.go.jp/bosai/common/const/area.json"
-          echo "::notice::JMA area.json → $(wc -c < /tmp/area.json) bytes"
-
       - name: 草加がどの予報区に入るか確かめる
         # 区域を取り違えると、黙って隣の地域の予報を出すことになる。
         # 埼玉県は 北部110020 / 南部110010 / 秩父地方110030 の3区域。
         # （草加という地名は画面にも CLAUDE.md にも既に出ているので、
         #   ここに書いても公開される情報は増えない）
         run: |
+          curl -s -o /tmp/area.json --max-time 25 -A "Mozilla/5.0" \
+            "https://www.jma.go.jp/bosai/common/const/area.json"
           python3 - <<'PY'
           import json
           a = json.load(open('/tmp/area.json', encoding='utf-8'))
-          print(f"::notice::area.json の階層={list(a)}")
-          for lvl in ('class20s', 'class15s', 'class10s'):
-              for code, v in (a.get(lvl) or {}).items():
-                  if '草加' in (v.get('name') or ''):
-                      print(f"::notice::{lvl} {code} {v.get('name')} "
-                            f"→ 親 {v.get('parent')}")
-          # 親をたどって一次細分区域まで上がる
+          print(f"::notice::階層={list(a)}")
+
+          hit = 0
           for code, v in (a.get('class20s') or {}).items():
-              if (v.get('name') or '').startswith('草加'):
+              if '草加' in (v.get('name') or ''):
+                  hit += 1
                   c15 = a['class15s'][v['parent']]
                   c10 = a['class10s'][c15['parent']]
-                  print(f"::notice::★草加市 → {c15['name']}({c15['parent']}) "
-                        f"→ {c10['name']} / 府県={c10['parent']}")
-          PY
-
-      - name: 天気コードの対応表を探す
-        # 気象庁の weatherCode は独自（100/101/200/...）で、
-        # index.html は WMO コード前提で描いている。変換表が要る。
-        # **記憶で書かず、公式の表を取って作る。**
-        run: |
-          set +e
-          # 表は const/*.json には無い（3候補とも 404）。
-          # ページの JS に埋め込まれているので、そこから抜く。
-          curl -s -o /tmp/page.html --max-time 25 -A "Mozilla/5.0" \
-            "https://www.jma.go.jp/bosai/forecast/"
-          echo "::notice::forecast ページ $(wc -c < /tmp/page.html) bytes"
-          python3 - <<'PY'
-          import re, json
-          html = open('/tmp/page.html', encoding='utf-8', errors='replace').read()
-
-          # 表は HTML 本体の中に R.TELOPS={100:[...],101:[...]} の形である。
-          # **キーが引用符なしの整数**なので、そのままでは JSON にならない。
-          m = re.search(r'TELOPS\s*=\s*\{(.*?)\}\s*;', html, re.S)
-          if not m:
-              print("::notice::TELOPS が見つからない")
-              raise SystemExit(0)
-          body = m.group(1)
-          print(f"::notice::TELOPS の塊 {len(body)}B")
-
-          # 値は 5 要素: [昼svg, 夜svg, 代表コード, 和名, 英名]
-          ent = re.findall(r'(\d+)\s*:\s*\[([^\]]*)\]', body)
-          print(f"::notice::telop件数={len(ent)}")
-
-          tbl = {}
-          for code, vals in ent:
-              parts = re.findall(r'"((?:[^"\\]|\\.)*)"', vals)
-              # 和名は "晴" のような JS のエスケープで入っている。
-              # unicode_escape + latin1 で戻そうとして空になったので、
-              # JSON の文字列として読ませる。
-              parts = [json.loads('"' + p + '"') for p in parts]
-              tbl[code] = parts
-
-          print(f"::notice::例 100={tbl.get('100')} / 102={tbl.get('102')}")
-
-          # 欲しいのは「コード → 代表コード」と、確認用の和名だけ
-          pairs = [f"{c}:{v[2]}:{v[3]}" for c, v in
-                   sorted(tbl.items(), key=lambda x: int(x[0])) if len(v) > 3]
-          s = " ".join(pairs)
-          print(f"::notice::全長={len(s)} 代表の種類={sorted({v[2] for v in tbl.values() if len(v)>2})}")
-          for i in range(0, len(s), 820):
-              print(f"::notice::TELOP[{i//820}] {s[i:i+820]}")
-          PY
-
-      - name: 気象庁の生データをそのまま出す
-        run: |
-          python3 - <<'PY'
-          import json
-          raw = open('/tmp/forecast.json', encoding='utf-8').read()
-          s = json.dumps(json.loads(raw), ensure_ascii=False, separators=(',', ':'))
-          print(f"::notice::raw 全長={len(s)}")
-          for i in range(0, len(s), 850):
-              print(f"::notice::RAW[{i//850}] {s[i:i+850]}")
-          PY
-
-      - name: 気象庁の中身を要約する
-        run: |
-          python3 - <<'PY'
-          import json, os
-
-          def note(s):
-              s = str(s).replace('\n', ' ')[:900]
-              print(f"::notice::{s}")
-
-          try:
-              d = json.load(open('/tmp/forecast.json', encoding='utf-8'))
-          except Exception as e:
-              note(f"forecast.json を読めない: {e}")
-              raise SystemExit(0)
-
-          note(f"要素数={len(d)}  発表={d[0].get('publishingOffice')} "
-               f"{d[0].get('reportDatetime')}")
-
-          for i, blk in enumerate(d):
-              for j, ts in enumerate(blk.get('timeSeries', [])):
-                  keys = sorted({k for a in ts['areas'] for k in a if k != 'area'})
-                  names = [a['area']['name'] + ':' + a['area']['code']
-                           for a in ts['areas']][:6]
-                  note(f"[{i}][{j}] 時刻数={len(ts['timeDefines'])} "
-                       f"項目={keys} 区域={names}")
-                  note(f"[{i}][{j}] timeDefines={ts['timeDefines'][:4]}")
-
-          # 埼玉県南部（草加が属する一次細分区域）を名前で探して中身を出す
-          for i, blk in enumerate(d):
-              for j, ts in enumerate(blk.get('timeSeries', [])):
-                  for a in ts['areas']:
-                      if '南部' in a['area']['name'] or '埼玉' in a['area']['name']:
-                          vals = {k: v for k, v in a.items() if k != 'area'}
-                          note(f"[{i}][{j}] {a['area']['name']}"
-                               f"({a['area']['code']}) {vals}")
-                          break
-
-          tavg = d[1].get('tempAverage') if len(d) > 1 else None
-          note(f"週間の平年値キーの有無: {bool(tavg)}")
-          PY
-
-      - name: 実装したコードを本物の気象庁に当てる
-        # Secrets を設定する前に、実装が本物の応答で動くかを確かめる。
-        # ここだけは予報区を直書きする（調査用なので。本番は Secrets）。
-        env:
-          DASH_LAT: ${{ secrets.DASH_LAT }}
-          DASH_LON: ${{ secrets.DASH_LON }}
-          DASH_JMA_OFFICE: "110000"
-          DASH_JMA_AREA: "110010"
-        run: |
-          python3 - <<'PY'
-          import fetch_data as fd
-
-          def note(s):
-              print(f"::notice::{str(s).replace(chr(10),' ')[:900]}")
-
-          j = fd.fetch_jma("110000", "110010")
-          note(f"発表={j['office']} {j['report']}")
-          note(f"天気 {sorted(j['weather_codes'].items())}")
-          note(f"降水 {sorted(j['pops'].items())}")
-
-          # Open-Meteo を取って、実際に上書きしてみる
-          out = fd.compute_dates(fd.datetime.now(fd.JST))
-          out["weather"] = fd.fetch_weather()
-          before = list(out["weather"]["daily"]["weather_code"])
-          beforep = list(out["weather"]["daily"]["precipitation_probability_max"])
-          beforet = list(out["weather"]["daily"]["temperature_2m_max"])
-          note(fd.merge_jma(out))
-          dd = out["weather"]["daily"]
-          note(f"日付   {dd['time'][:8]}")
-          note(f"天気 前 {before[:8]}")
-          note(f"天気 後 {dd['weather_code'][:8]}")
-          note(f"降水 前 {beforep[:8]}")
-          note(f"降水 後 {dd['precipitation_probability_max'][:8]}")
-          ok = beforet == dd['temperature_2m_max']
-          note(f"気温は触っていないか: {ok}")
-          leak = [k for k in ('latitude', 'longitude', 'elevation')
-                  if k in out['weather']]
-          note(f"座標の漏れ: {leak or 'なし'}")
-          PY
-
-      - name: Open-Meteo を best_match と jma_seamless で比べる
-        env:
-          DASH_LAT: ${{ secrets.DASH_LAT }}
-          DASH_LON: ${{ secrets.DASH_LON }}
-        run: |
-          python3 - <<'PY'
-          import json, os, urllib.request
-
-          LAT = os.environ['DASH_LAT']; LON = os.environ['DASH_LON']
-
-          def note(s):
-              print(f"::notice::{str(s).replace(chr(10),' ')[:900]}")
-
-          def get(models):
-              u = ("https://api.open-meteo.com/v1/forecast"
-                   f"?latitude={LAT}&longitude={LON}"
-                   "&daily=weather_code,temperature_2m_max,temperature_2m_min,"
-                   "precipitation_probability_max"
-                   "&timezone=Asia%2FTokyo&forecast_days=8")
-              if models:
-                  u += f"&models={models}"
-              with urllib.request.urlopen(u, timeout=30) as r:
-                  return json.load(r)
-
-          out = {}
-          for name, m in (("best_match", None), ("jma_seamless", "jma_seamless")):
-              try:
-                  d = get(m)
-                  dd = d['daily']
-                  out[name] = dd
-                  note(f"{name} 日付={dd['time'][:8]}")
-                  note(f"{name} 天気={dd['weather_code'][:8]}")
-                  note(f"{name} 最高={dd['temperature_2m_max'][:8]}")
-                  note(f"{name} 最低={dd['temperature_2m_min'][:8]}")
-                  note(f"{name} 降水={dd['precipitation_probability_max'][:8]}")
-              except Exception as e:
-                  note(f"{name} 失敗: {type(e).__name__} {e}")
-
-          if len(out) == 2:
-              a, b = out['best_match'], out['jma_seamless']
-              diff = [i for i in range(min(len(a['time']), len(b['time'])))
-                      if a['weather_code'][i] != b['weather_code'][i]]
-              note(f"天気コードが違う日のindex={diff}")
-              dt = [round((a['temperature_2m_max'][i] or 0)
-                          - (b['temperature_2m_max'][i] or 0), 1)
-                    for i in range(min(len(a['time']), len(b['time'])))]
-              note(f"最高気温の差(best-jma)={dt}")
+                  print(f"::notice::★{v['name']}({code}) → "
+                        f"{c15['name']}({c15['parent']}) → "
+                        f"{c10['name']}({c15['parent'] and c15['parent']}) "
+                        f"一次細分={c15['parent']} 府県={c10['parent']}")
+          if not hit:
+              print("::notice::class20s に見つからない。埼玉県の区域を並べる")
+              for code, v in (a.get('class10s') or {}).items():
+                  if code.startswith('11'):
+                      print(f"::notice::class10s {code} {v.get('name')} "
+                            f"親={v.get('parent')}")
           PY
