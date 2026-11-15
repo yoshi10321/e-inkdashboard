@@ -51,26 +51,47 @@ jobs:
         # **記憶で書かず、公式の表を取って作る。**
         run: |
           set +e
-          for u in \
-            "https://www.jma.go.jp/bosai/forecast/const/telops.json" \
-            "https://www.jma.go.jp/bosai/forecast/const/forecast_telop.json" \
-            "https://www.jma.go.jp/bosai/common/const/telops.json" ; do
-            code=$(curl -s -o /tmp/t.json -w "%{http_code}" --max-time 20 \
-                   -A "Mozilla/5.0" "$u")
-            echo "::notice::telop候補 $code $(wc -c < /tmp/t.json)B  $u"
-            if [ "$code" = "200" ]; then cp /tmp/t.json /tmp/telops.json; fi
-          done
-          if [ -f /tmp/telops.json ]; then
-            python3 - <<'PY'
-          import json
-          d = json.load(open('/tmp/telops.json', encoding='utf-8'))
-          print(f"::notice::telop件数={len(d)}")
-          ks = sorted(d, key=lambda x: int(x))
-          for chunk in [ks[i:i+14] for i in range(0, len(ks), 14)][:9]:
-              print("::notice::" + " / ".join(
-                  f"{k}:{d[k][3] if len(d[k])>3 else d[k]}" for k in chunk)[:900])
+          # 表は const/*.json には無い（3候補とも 404）。
+          # ページの JS に埋め込まれているので、そこから抜く。
+          curl -s -o /tmp/page.html --max-time 25 -A "Mozilla/5.0" \
+            "https://www.jma.go.jp/bosai/forecast/"
+          echo "::notice::forecast ページ $(wc -c < /tmp/page.html) bytes"
+          python3 - <<'PY'
+          import re, json, urllib.request, subprocess
+          html = open('/tmp/page.html', encoding='utf-8', errors='replace').read()
+          srcs = re.findall(r'<script[^>]+src="([^"]+)"', html)
+          print(f"::notice::script数={len(srcs)} {srcs[:8]}")
+          found = None
+          for s in srcs:
+              u = s if s.startswith('http') else \
+                  'https://www.jma.go.jp' + (s if s.startswith('/')
+                                             else '/bosai/forecast/' + s)
+              try:
+                  req = urllib.request.Request(u, headers={'User-Agent': 'Mozilla/5.0'})
+                  js = urllib.request.urlopen(req, timeout=25).read().decode(
+                      'utf-8', 'replace')
+              except Exception as e:
+                  print(f"::notice::取得失敗 {u} {e}")
+                  continue
+              # "100":[...,"晴"] のような並びを探す
+              if re.search(r'"1\d\d"\s*:\s*\[', js) and '晴' in js:
+                  print(f"::notice::★表はここ {u} ({len(js)}B)")
+                  found = js
+                  break
+              print(f"::notice::該当なし {u} ({len(js)}B)")
+          if found:
+              m = re.search(r'\{\s*"100"\s*:\s*\[.*?\]\s*\}', found, re.S)
+              if m:
+                  tbl = json.loads(m.group(0))
+                  print(f"::notice::telop件数={len(tbl)}")
+                  ks = sorted(tbl, key=int)
+                  out = {k: tbl[k][3] if len(tbl[k]) > 3 else tbl[k] for k in ks}
+                  s = json.dumps(out, ensure_ascii=False, separators=(',', ':'))
+                  for i in range(0, len(s), 850):
+                      print(f"::notice::TELOP[{i//850}] {s[i:i+850]}")
+              else:
+                  print("::notice::表らしき形が見つからない")
           PY
-          fi
 
       - name: 気象庁の生データをそのまま出す
         run: |
