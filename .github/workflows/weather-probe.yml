@@ -76,9 +76,10 @@ jobs:
           tbl = {}
           for code, vals in ent:
               parts = re.findall(r'"((?:[^"\\]|\\.)*)"', vals)
-              parts = [p.encode().decode('unicode_escape')
-                       .encode('latin1', 'ignore').decode('utf-8', 'ignore')
-                       if '\\u' in p else p for p in parts]
+              # 和名は "晴" のような JS のエスケープで入っている。
+              # unicode_escape + latin1 で戻そうとして空になったので、
+              # JSON の文字列として読ませる。
+              parts = [json.loads('"' + p + '"') for p in parts]
               tbl[code] = parts
 
           print(f"::notice::例 100={tbl.get('100')} / 102={tbl.get('102')}")
