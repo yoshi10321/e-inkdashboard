@@ -29,13 +29,17 @@ jobs:
           AREA: "110000"
         run: |
           set +e
-          for p in forecast/data/forecast overview_forecast/data/forecast; do
-            url="https://www.jma.go.jp/bosai/${p}/${AREA}.json"
-            code=$(curl -s -o "/tmp/$(basename $p).json" -w "%{http_code}" \
-                   --max-time 25 -A "Mozilla/5.0" "$url")
-            size=$(wc -c < "/tmp/$(basename $p).json" 2>/dev/null || echo 0)
-            echo "::notice::JMA $p → HTTP $code / ${size} bytes"
-          done
+          # 保存先の名前は URL から作らないこと。
+          # 前回 basename を使ったら forecast/data/forecast と
+          # overview_forecast/data/forecast がどちらも forecast.json になり、
+          # 404 の HTML が本体を上書きして中身が読めなくなった。
+          probe() {   # probe <保存名> <URL>
+            code=$(curl -s -o "/tmp/$1.json" -w "%{http_code}" \
+                   --max-time 25 -A "Mozilla/5.0" "$2")
+            echo "::notice::JMA $1 → HTTP $code / $(wc -c < /tmp/$1.json) bytes"
+          }
+          probe forecast  "https://www.jma.go.jp/bosai/forecast/data/forecast/${AREA}.json"
+          probe overview  "https://www.jma.go.jp/bosai/forecast/data/overview_forecast/${AREA}.json"
           # 地域の一覧も取る。草加がどの区域に入るかを確かめるため。
           curl -s -o /tmp/area.json --max-time 25 -A "Mozilla/5.0" \
             "https://www.jma.go.jp/bosai/common/const/area.json"
