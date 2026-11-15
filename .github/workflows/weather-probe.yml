@@ -48,6 +48,30 @@ jobs:
             "https://www.jma.go.jp/bosai/common/const/area.json"
           echo "::notice::JMA area.json → $(wc -c < /tmp/area.json) bytes"
 
+      - name: 草加がどの予報区に入るか確かめる
+        # 区域を取り違えると、黙って隣の地域の予報を出すことになる。
+        # 埼玉県は 北部110020 / 南部110010 / 秩父地方110030 の3区域。
+        # （草加という地名は画面にも CLAUDE.md にも既に出ているので、
+        #   ここに書いても公開される情報は増えない）
+        run: |
+          python3 - <<'PY'
+          import json
+          a = json.load(open('/tmp/area.json', encoding='utf-8'))
+          print(f"::notice::area.json の階層={list(a)}")
+          for lvl in ('class20s', 'class15s', 'class10s'):
+              for code, v in (a.get(lvl) or {}).items():
+                  if '草加' in (v.get('name') or ''):
+                      print(f"::notice::{lvl} {code} {v.get('name')} "
+                            f"→ 親 {v.get('parent')}")
+          # 親をたどって一次細分区域まで上がる
+          for code, v in (a.get('class20s') or {}).items():
+              if (v.get('name') or '').startswith('草加'):
+                  c15 = a['class15s'][v['parent']]
+                  c10 = a['class10s'][c15['parent']]
+                  print(f"::notice::★草加市 → {c15['name']}({c15['parent']}) "
+                        f"→ {c10['name']} / 府県={c10['parent']}")
+          PY
+
       - name: 天気コードの対応表を探す
         # 気象庁の weatherCode は独自（100/101/200/...）で、
         # index.html は WMO コード前提で描いている。変換表が要る。
