@@ -145,6 +145,46 @@ jobs:
           note(f"週間の平年値キーの有無: {bool(tavg)}")
           PY
 
+      - name: 実装したコードを本物の気象庁に当てる
+        # Secrets を設定する前に、実装が本物の応答で動くかを確かめる。
+        # ここだけは予報区を直書きする（調査用なので。本番は Secrets）。
+        env:
+          DASH_LAT: ${{ secrets.DASH_LAT }}
+          DASH_LON: ${{ secrets.DASH_LON }}
+          DASH_JMA_OFFICE: "110000"
+          DASH_JMA_AREA: "110010"
+        run: |
+          python3 - <<'PY'
+          import fetch_data as fd
+
+          def note(s):
+              print(f"::notice::{str(s).replace(chr(10),' ')[:900]}")
+
+          j = fd.fetch_jma("110000", "110010")
+          note(f"発表={j['office']} {j['report']}")
+          note(f"天気 {sorted(j['weather_codes'].items())}")
+          note(f"降水 {sorted(j['pops'].items())}")
+
+          # Open-Meteo を取って、実際に上書きしてみる
+          out = fd.compute_dates(fd.datetime.now(fd.JST))
+          out["weather"] = fd.fetch_weather()
+          before = list(out["weather"]["daily"]["weather_code"])
+          beforep = list(out["weather"]["daily"]["precipitation_probability_max"])
+          beforet = list(out["weather"]["daily"]["temperature_2m_max"])
+          note(fd.merge_jma(out))
+          dd = out["weather"]["daily"]
+          note(f"日付   {dd['time'][:8]}")
+          note(f"天気 前 {before[:8]}")
+          note(f"天気 後 {dd['weather_code'][:8]}")
+          note(f"降水 前 {beforep[:8]}")
+          note(f"降水 後 {dd['precipitation_probability_max'][:8]}")
+          ok = beforet == dd['temperature_2m_max']
+          note(f"気温は触っていないか: {ok}")
+          leak = [k for k in ('latitude', 'longitude', 'elevation')
+                  if k in out['weather']]
+          note(f"座標の漏れ: {leak or 'なし'}")
+          PY
+
       - name: Open-Meteo を best_match と jma_seamless で比べる
         env:
           DASH_LAT: ${{ secrets.DASH_LAT }}
