@@ -45,6 +45,44 @@ jobs:
             "https://www.jma.go.jp/bosai/common/const/area.json"
           echo "::notice::JMA area.json → $(wc -c < /tmp/area.json) bytes"
 
+      - name: 天気コードの対応表を探す
+        # 気象庁の weatherCode は独自（100/101/200/...）で、
+        # index.html は WMO コード前提で描いている。変換表が要る。
+        # **記憶で書かず、公式の表を取って作る。**
+        run: |
+          set +e
+          for u in \
+            "https://www.jma.go.jp/bosai/forecast/const/telops.json" \
+            "https://www.jma.go.jp/bosai/forecast/const/forecast_telop.json" \
+            "https://www.jma.go.jp/bosai/common/const/telops.json" ; do
+            code=$(curl -s -o /tmp/t.json -w "%{http_code}" --max-time 20 \
+                   -A "Mozilla/5.0" "$u")
+            echo "::notice::telop候補 $code $(wc -c < /tmp/t.json)B  $u"
+            if [ "$code" = "200" ]; then cp /tmp/t.json /tmp/telops.json; fi
+          done
+          if [ -f /tmp/telops.json ]; then
+            python3 - <<'PY'
+          import json
+          d = json.load(open('/tmp/telops.json', encoding='utf-8'))
+          print(f"::notice::telop件数={len(d)}")
+          ks = sorted(d, key=lambda x: int(x))
+          for chunk in [ks[i:i+14] for i in range(0, len(ks), 14)][:9]:
+              print("::notice::" + " / ".join(
+                  f"{k}:{d[k][3] if len(d[k])>3 else d[k]}" for k in chunk)[:900])
+          PY
+          fi
+
+      - name: 気象庁の生データをそのまま出す
+        run: |
+          python3 - <<'PY'
+          import json
+          raw = open('/tmp/forecast.json', encoding='utf-8').read()
+          s = json.dumps(json.loads(raw), ensure_ascii=False, separators=(',', ':'))
+          print(f"::notice::raw 全長={len(s)}")
+          for i in range(0, len(s), 850):
+              print(f"::notice::RAW[{i//850}] {s[i:i+850]}")
+          PY
+
       - name: 気象庁の中身を要約する
         run: |
           python3 - <<'PY'
